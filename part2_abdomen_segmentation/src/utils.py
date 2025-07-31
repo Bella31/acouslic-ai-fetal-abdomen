@@ -53,3 +53,24 @@ def get_segmentation_transforms():
     ])
 
     return image_transform, mask_transform
+
+
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, preds, targets):
+        preds = preds.view(-1)
+        targets = targets.view(-1)
+        intersection = (preds * targets).sum()
+        dice = (2. * intersection + self.smooth) / (preds.sum() + targets.sum() + self.smooth)
+        return 1 - dice
+
+def dice_coefficient(preds, targets, threshold=0.5, smooth=1.0):
+    preds = (preds > threshold).float()
+    preds = preds.view(-1)
+    targets = targets.view(-1)
+    intersection = (preds * targets).sum()
+    dice = (2. * intersection + smooth) / (preds.sum() + targets.sum() + smooth)
+    return dice.item()
