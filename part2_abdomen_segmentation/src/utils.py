@@ -1,0 +1,55 @@
+from torch.utils.data import Dataset
+from torchvision import transforms
+from PIL import Image
+import os
+import torch
+
+class SegmentationDataset(Dataset):
+    """
+    Custom Dataset for segmentation: loads grayscale images and corresponding masks.
+    """
+    def __init__(self, images_dir, masks_dir, image_transform=None, mask_transform=None):
+        self.images = sorted(os.listdir(images_dir))
+        self.masks = sorted(os.listdir(masks_dir))
+        self.images_dir = images_dir
+        self.masks_dir = masks_dir
+        self.image_transform = image_transform
+        self.mask_transform = mask_transform
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.images_dir, self.images[idx])
+        mask_path = os.path.join(self.masks_dir, self.masks[idx])
+
+        image = Image.open(img_path).convert("L")  # Grayscale
+        mask = Image.open(mask_path).convert("L")  # Binary mask
+
+        if self.image_transform:
+            image = self.image_transform(image)
+        if self.mask_transform:
+            mask = self.mask_transform(mask)
+
+        # Ensure mask is binary
+        mask = (mask > 0).float()
+
+        return image, mask
+
+
+def get_segmentation_transforms():
+    """
+    Returns separate transforms for image and mask.
+    """
+    image_transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5])
+    ])
+
+    mask_transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.ToTensor()
+    ])
+
+    return image_transform, mask_transform
