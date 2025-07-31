@@ -104,10 +104,30 @@ def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, devic
             best_val_acc = val_acc
             counter = 0
             torch.save(model.state_dict(), "/content/drive/MyDrive/models/best_effnetv2.pt")
-            print(f"✅ Best model saved at epoch {epoch+1} with Val Acc: {val_acc:.4f}")
+            print(f"Best model saved at epoch {epoch+1} with Val Acc: {val_acc:.4f}")
         else:
             counter += 1
             if counter >= patience:
                 print("⏹️ Early stopping triggered")
                 break
+                
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train classification model for Acouslic-AI")
+    parser.add_argument("--data_dir", type=str, required=True, help="Path to balanced dataset")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--model_save_path", type=str, default="models/resnet50_3class.pt")
+    args = parser.parse_args()
+
+    os.makedirs(os.path.dirname(args.model_save_path), exist_ok=True)
+
+    train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
+    train(model, train_loader, val_loader, optimizer, criterion, epochs=args.epochs)
+    torch.save(model.state_dict(), args.model_save_path)
+
+    model.load_state_dict(torch.load(args.model_save_path, map_location=device))
+    test_acc = evaluate(model, test_loader, device)
+    print(f"Test Accuracy: {test_acc:.4f}")
 
