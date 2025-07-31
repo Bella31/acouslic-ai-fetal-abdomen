@@ -4,7 +4,10 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from src.model_resnet import get_finetune_resnet_model
 from src.utils import FocalLoss
+from torch.amp import autocast, GradScaler
+from src.utils import mixup_data, mixup_criterion, evaluate
 import os
+
 
 def get_dataloaders(base_path, batch_size):
     train_transform = transforms.Compose([
@@ -58,3 +61,53 @@ def score_frames(model, frames_tensor):
         outputs = model(frames_tensor)
         probs = torch.softmax(outputs, dim=1).cpu().numpy()
     return probs
+
+
+scaler = GradScaler('cuda')
+
+def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, device="cuda"):
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3, factor=0.1, verbose=True)
+    best_val_acc = 0
+    patience = 6
+    counter = 0
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss, correct, total = 0, 0, 0
+        for images, labels in train_loader:
+            images = images.to(device)
+            labels = labels.long().to(device)
+
+            optimizer.zero_grad()
+            with autocast('cuda'):
+                mixed_images, targets_a, targets_b, lam = mixup_data(images, labels)
+                outputs = model(mixed_images)
+                loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            total_loss += loss.item() * images.size(0)
+            preds = torch.argmax(outputs, dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
+        train_acc = correct / total
+        train_loss = total_loss / total
+        val_acc = evaluate(model, val_loader, device)
+
+        print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f}")
+        scheduler.step(val_acc)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            counter = 0
+            torch.save(model.state_dict(), "/content/drive/MyDrive/models/best_effnetv2.pt")
+            print(f"✅ Best model saved at epoch {epoch+1} with Val Acc: {val_acc:.4f}")
+        else:
+            counter += 1
+            if counter >= patience:
+                print("⏹️ Early stopping triggered")
+                break
+
