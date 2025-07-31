@@ -1,19 +1,40 @@
-from src.utils import SegmentationDataset, get_segmentation_transforms
-from torch.utils.data import DataLoader
+import torch
+from torch import optim
+from tqdm import tqdm
 
-train_img_dir = "./part2_abdomen_segmentation/data/split/train/images"
-train_mask_dir = "./part2_abdomen_segmentation/data/split/train/masks"
-val_img_dir = "./part2_abdomen_segmentation/data/split/val/images"
-val_mask_dir = "./part2_abdomen_segmentation/data/split/val/masks"
-test_img_dir = "./part2_abdomen_segmentation/data/split/test/images"
-test_mask_dir = "./part2_abdomen_segmentation/data/split/test/masks"
+def train_unet(model, train_loader, val_loader, device, epochs=10):
+    criterion = DiceLoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-image_transform, mask_transform = get_segmentation_transforms()
+    model.to(device)
 
-train_dataset = SegmentationDataset(train_img_dir, train_mask_dir, image_transform, mask_transform)
-val_dataset = SegmentationDataset(val_img_dir, val_mask_dir, image_transform, mask_transform)
-test_dataset = SegmentationDataset(test_img_dir, test_mask_dir, image_transform, mask_transform)
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+        for images, masks in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+            images = images.to(device)
+            masks = masks.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+        val_dice = evaluate_unet(model, val_loader, device)
+        print(f"Epoch {epoch+1}: Train Loss = {epoch_loss:.4f}, Val Dice = {val_dice:.4f}")
+
+def evaluate_unet(model, val_loader, device):
+    model.eval()
+    total_dice = 0.0
+    with torch.no_grad():
+        for images, masks in val_loader:
+            images = images.to(device)
+            masks = masks.to(device)
+            outputs = model(images)
+            dice = dice_coefficient(outputs, masks)
+            total_dice += dice
+    return total_dice / len(val_loader)
