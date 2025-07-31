@@ -103,3 +103,19 @@ def normalized_ac_error(pred_mask, true_mask, spacing_mm):
     if max(p_pred, p_true) == 0:
         return np.nan
     return abs(p_true - p_pred) / max(p_pred, p_true)
+
+
+class BCEDiceLoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(BCEDiceLoss, self).__init__()
+        self.bce = nn.BCEWithLogitsLoss()
+        self.smooth = smooth
+
+    def forward(self, preds, targets):
+        bce_loss = self.bce(preds, targets)
+        preds = torch.sigmoid(preds)
+        preds = preds.view(-1)
+        targets = targets.view(-1)
+        intersection = (preds * targets).sum()
+        dice = (2. * intersection + self.smooth) / (preds.sum() + targets.sum() + self.smooth)
+        return bce_loss + (1 - dice)
