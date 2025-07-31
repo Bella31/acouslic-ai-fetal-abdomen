@@ -74,3 +74,32 @@ def dice_coefficient(preds, targets, threshold=0.5, smooth=1.0):
     intersection = (preds * targets).sum()
     dice = (2. * intersection + smooth) / (preds.sum() + targets.sum() + smooth)
     return dice.item()
+
+
+def hausdorff_distance(pred_mask, true_mask):
+    # find nonzero (y,x) points on each mask
+    p_pts = np.argwhere(pred_mask>0)
+    t_pts = np.argwhere(true_mask>0)
+    if len(p_pts)==0 or len(t_pts)==0:
+        return np.nan
+    d1 = directed_hausdorff(p_pts, t_pts)[0]
+    d2 = directed_hausdorff(t_pts, p_pts)[0]
+    return max(d1, d2)
+
+def ellipse_perimeter(mask):
+    # find largest contour and return its arc length in pixels
+    cnts, _ = cv2.findContours(mask.astype(np.uint8),
+                               cv2.RETR_EXTERNAL,
+                               cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return 0.0
+    c = max(cnts, key=cv2.contourArea)
+    return cv2.arcLength(c, True)
+
+def normalized_ac_error(pred_mask, true_mask, spacing_mm):
+    # perimeter in px → mm
+    p_pred = ellipse_perimeter(pred_mask) * spacing_mm
+    p_true = ellipse_perimeter(true_mask) * spacing_mm
+    if max(p_pred, p_true) == 0:
+        return np.nan
+    return abs(p_true - p_pred) / max(p_pred, p_true)
