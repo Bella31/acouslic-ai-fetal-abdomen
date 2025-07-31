@@ -1,26 +1,24 @@
 import pandas as pd
 import numpy as np
 import os
+import argparse
 
-# Output file path
-output_path = "/content/drive/MyDrive/per_scan_downsampled_3class_labels.csv"
+def prepare_balanced_dataset(input_csv, output_csv, suboptimal_limit=10):
+    # Check if output file already exists and is not empty
+    if os.path.exists(output_csv):
+        existing_df = pd.read_csv(output_csv)
+        if not existing_df.empty:
+            print(f" File already exists with {len(existing_df)} rows. Skipping generation.")
+            return
 
-# Check if the file already exists and has content
-if os.path.exists(output_path):
-    existing_df = pd.read_csv(output_path)
-    if not existing_df.empty:
-        print(f"File already exists with {len(existing_df)} rows. Skipping generation.")
-    else:
-        generate = True
-else:
-    generate = True
+    # Load labeled frame CSV
+    df = pd.read_csv(input_csv)
 
-# Only run generation if file doesn't exist or is empty
-if 'generate' in locals() and generate:
-    # Load 3-class labeled frame CSV
-    df = pd.read_csv("/content/drive/MyDrive/per_scan_binary_labels.csv")
+    # Validate required columns
+    required_cols = {"Filename", "Frame", "Label"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"CSV must contain columns: {required_cols}")
 
-    # Store sampled rows here
     balanced_rows = []
 
     # Group by scan
@@ -32,13 +30,13 @@ if 'generate' in locals() and generate:
         if len(optimal) == 0 and len(suboptimal) == 0:
             continue  # skip scans with no good frames
 
-        # Sample suboptimal (optional limit)
-        suboptimal_sample = suboptimal.sample(n=min(len(suboptimal), 10), random_state=42)
+        # Sample suboptimal
+        suboptimal_sample = suboptimal.sample(n=min(len(suboptimal), suboptimal_limit), random_state=42)
 
         # Combine good frames
         good_frames = pd.concat([optimal, suboptimal_sample])
 
-        # Sample same number of irrelevant frames
+        # Sample irrelevant frames equal to good frames
         irrelevant_sample = irrelevant.sample(n=min(len(irrelevant), len(good_frames)), random_state=42)
 
         # Combine and store
@@ -48,5 +46,15 @@ if 'generate' in locals() and generate:
     balanced_df = pd.concat(balanced_rows).sample(frac=1, random_state=42).reset_index(drop=True)
 
     # Save to new CSV
-    balanced_df.to_csv(output_path, index=False)
-    print("Saved reduced 3-class dataset with", len(balanced_df), "frames.")
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    balanced_df.to_csv(output_csv, index=False)
+    print(f" Saved reduced 3-class dataset with {len(balanced_df)} frames at: {output_csv}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Prepare a balanced 3-class dataset for Acouslic-AI")
+    parser.add_argument("--input", type=str, required=True, help="Path to input labeled CSV file")
+    parser.add_argument("--output", type=str, required=True, help="Path to save balanced CSV file")
+    parser.add_argument("--suboptimal_limit", type=int, default=10, help="Maximum number of suboptimal frames per scan")
+    args = parser.parse_args()
+
+    prepare_balanced_dataset(args.input, args.output, args.suboptimal_limit)
