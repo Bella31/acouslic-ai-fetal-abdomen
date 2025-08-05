@@ -191,23 +191,6 @@ python scripts/evaluate_segmentation.py \
 - **CSV Labels**: Frame-level annotations with columns: Filename, Frame, Label
 - **Masks**: Binary segmentation masks in MHA format
 
-### Data Organization
-```
-dataset/
-├── train/
-│   ├── optimal/
-│   ├── suboptimal/
-│   └── irrelevant/
-├── val/
-│   ├── optimal/
-│   ├── suboptimal/
-│   └── irrelevant/
-└── test/
-    ├── optimal/
-    ├── suboptimal/
-    └── irrelevant/
-```
-
 ## Dependencies
 
 ### Part 1 Requirements
@@ -239,10 +222,4 @@ dataset/
 - **Batch Size**: Adjust based on available GPU memory
 - **Mixed Precision**: Automatic mixed precision training for efficiency
 
-## Contributing
 
-This project is designed for medical imaging research. When contributing:
-1. Ensure all code follows medical imaging best practices
-2. Validate results on appropriate test datasets
-3. Document any changes to model architectures or evaluation metrics
-4. Test thoroughly before deployment in clinical settings
