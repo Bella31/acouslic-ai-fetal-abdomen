@@ -17,11 +17,3 @@ def get_finetune_resnet_model(num_classes=3, pretrained=True, grayscale=True, de
     model.fc = nn.Linear(model.fc.in_features, num_classes)
 
     return model.to(device)
-
-def freeze_layers(model, freeze_until="layer4"):
-    freeze = True
-    for name, param in model.named_parameters():
-        if freeze:
-            param.requires_grad = False
-        if freeze_until in name:
-            freeze = False
