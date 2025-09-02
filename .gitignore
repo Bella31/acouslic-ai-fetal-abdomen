@@ -1,0 +1,6 @@
+/venv/
+__pycache__/
+*$py.class
+*.pyc
+workspace.xml
+.idea
