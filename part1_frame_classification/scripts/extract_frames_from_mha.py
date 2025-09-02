@@ -4,6 +4,8 @@ import SimpleITK as sitk
 from PIL import Image
 from tqdm import tqdm
 import argparse
+import numpy as np
+
 
 def extract_frames(csv_path, mha_dir, output_base, train_ratio=0.7, val_ratio=0.15):
     df = pd.read_csv(csv_path)
@@ -18,6 +20,7 @@ def extract_frames(csv_path, mha_dir, output_base, train_ratio=0.7, val_ratio=0.
     train_end = int(train_ratio * len(unique_scans))
     val_end = train_end + int(val_ratio * len(unique_scans))
     train_scans, val_scans, test_scans = np.split(unique_scans, [train_end, val_end])
+
 
     split_map = {fn: 'train' for fn in train_scans}
     split_map.update({fn: 'val' for fn in val_scans})

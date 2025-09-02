@@ -3,11 +3,47 @@ import torch
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from src.model_resnet import get_finetune_resnet_model
-from src.utils import FocalLoss, mixup_data, mixup_criterion, evaluate
+from part1_frame_classification.src.model_resnet import get_finetune_resnet_model
+from part1_frame_classification.src.utils import (FocalLoss, mixup_data, mixup_criterion, evaluate,
+                                                  get_create_model_dir, ParamsReadWrite)
 from torch.amp import autocast, GradScaler
+from PIL import Image, ImageFile
+import pandas as pd
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def safe_pil_loader(path: str):
+    """Open image as RGB; return None if it can't be read."""
+    try:
+        with Image.open(path) as im:
+            return im.convert("RGB")
+    except Exception as e:
+        print(f"[WARN] bad image skipped: {path} ({e})")
+        return None
+
+class SafeImageFolder(ImageFolder):
+    """Wraps __getitem__ to skip files that failed to load/transform."""
+    def __getitem__(self, index):
+        # try a few indices until one works
+        tries = 0
+        while tries < 5:
+            path, target = self.samples[index]
+            try:
+                sample = self.loader(path)              # uses our safe_pil_loader
+                if sample is None:                      # unreadable image
+                    raise OSError("loader returned None")
+                if self.transform is not None:
+                    sample = self.transform(sample)
+                if self.target_transform is not None:
+                    target = self.target_transform(target)
+                return sample, target
+            except Exception as e:
+                print(f"[WARN] skipping {path}: {e}")
+                # move to next sample
+                index = (index + 1) % len(self.samples)
+                tries += 1
+        # if many consecutive failures, surface an error instead of looping forever
+        raise RuntimeError("Too many consecutive bad images.")
+
 
 def get_dataloaders(base_path, batch_size):
     train_transform = transforms.Compose([
@@ -44,7 +80,9 @@ def get_dataloaders(base_path, batch_size):
     return train_loader, val_loader, test_loader
 
 
-def score_frames(model, frames_tensor):
+def score_frames(model, frames_tensor, device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     with torch.no_grad():
         frames_tensor = frames_tensor.to(device)
@@ -53,14 +91,22 @@ def score_frames(model, frames_tensor):
     return probs
 
 
-def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, device="cuda", model_save_path="best_model.pt"):
+def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, device="cuda", model_save_path = 'model.pt',
+          metrics_path='train_metics.csv', patience = 6):
     scaler = GradScaler('cuda')
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3, factor=0.1, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3, factor=0.1)
     best_val_acc = 0
-    patience = 6
     counter = 0
-
+    df = pd.DataFrame({
+        "epoch": pd.Series(dtype="int"),
+        "train_loss": pd.Series(dtype="float32"),
+        "train_acc": pd.Series(dtype="float32"),
+        "val_acc": pd.Series(dtype="float32"),
+    })
+    df.to_csv(metrics_path)
+    #print('number of training images is: ' + str(len(train_loader.sampler)))
     for epoch in range(epochs):
+        print('Training epoch ' + str(epoch))
         model.train()
         total_loss, correct, total = 0, 0, 0
         for images, labels in train_loader:
@@ -100,22 +146,35 @@ def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, devic
                 print(" Early stopping triggered")
                 break
 
+        #save epoch data
+        metrics_df = pd.read_csv(metrics_path)
+        row = {"epoch": epoch, "train_loss": train_loss, "train_acc": train_acc, "val_acc": val_acc}
+        metrics_df = pd.concat([metrics_df, pd.DataFrame([row])], ignore_index=True)
+        metrics_df.to_csv(metrics_path, index=False)
+
 
 if __name__ == "__main__":
     import argparse
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     parser = argparse.ArgumentParser(description="Train classification model for Acouslic-AI")
     parser.add_argument("--data_dir", type=str, required=True, help="Path to balanced dataset")
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--model_save_path", type=str, default="models/resnet50_3class.pt")
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--log_dir", type=str, default="/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/network")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight decay")
+    parser.add_argument("--patience", type=int, default=20, help="patience")
     args = parser.parse_args()
 
-    # Create output folder
-    os.makedirs(os.path.dirname(args.model_save_path), exist_ok=True)
+    model_dir = get_create_model_dir(args.log_dir)
+    model_save_path = os.path.join(model_dir, 'resnet50_3class.pt')
+    os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
 
+    out_cfg_path = os.path.join(model_dir, 'config.json')
+    ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
+                                 args.patience)
+    metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
     train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
 
@@ -129,11 +188,13 @@ if __name__ == "__main__":
     )
 
     print(f" Training started with config: {args}")
-
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
     # Train model
-    train(model, train_loader, val_loader, optimizer, criterion, epochs=args.epochs, model_save_path=args.model_save_path)
+    train(model, train_loader, val_loader, optimizer, criterion, epochs=args.epochs, model_save_path=model_save_path,
+          metrics_path=metrics_path, patience=args.patience)
 
     # Evaluate on test set
-    model.load_state_dict(torch.load(args.model_save_path, map_location=device))
+    model.load_state_dict(torch.load(model_save_path, map_location=device))
     test_acc = evaluate(model, test_loader, device)
     print(f" Test Accuracy: {test_acc:.4f}")

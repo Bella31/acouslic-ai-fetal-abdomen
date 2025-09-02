@@ -53,7 +53,7 @@ def prepare_balanced_dataset(input_csv, output_csv, suboptimal_limit=10):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare a balanced 3-class dataset for Acouslic-AI")
     parser.add_argument("--input", type=str, required=True, help="Path to input labeled CSV file")
-    parser.add_argument("--output", type=str, required=True, help="Path to save balanced CSV file")
+    parser.add_argument("--output", type=str, required=True, help="Path to save balanced CSV fil e")
     parser.add_argument("--suboptimal_limit", type=int, default=10, help="Maximum number of suboptimal frames per scan")
     args = parser.parse_args()
 

@@ -3,8 +3,6 @@ import torch.nn as nn
 import torchvision.models as models
 
 def get_finetune_resnet_model(num_classes=3, pretrained=True, grayscale=True, device=None):
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = models.resnet50(pretrained=pretrained)
 

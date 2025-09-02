@@ -3,6 +3,9 @@ import torch.nn as nn
 import numpy as np
 import SimpleITK as sitk
 from PIL import Image
+import os
+import json
+
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0):
@@ -92,3 +95,62 @@ def get_best_frame_index(mha_path, model, transform, optimal_threshold=0.3, subo
     # Fallback: pick highest irrelevant score
     best_idx = np.argmax(irrelevant_scores)
     return best_idx, irrelevant_scores[best_idx]
+
+
+class ParamsReadWrite:
+    @staticmethod
+    def list_dump(lst, out_file):
+        np.savetxt(out_file, lst, fmt='%s')
+
+    @staticmethod
+    def list_load(in_file):
+        return list(np.loadtxt(in_file, dtype=str, ndmin=1))
+
+    @staticmethod
+    def save_split_data(model_dir, train_lst, valid_lst, test_lst):
+        """
+        Save training, validation andtest data
+        """
+        split_path = os.path.join(model_dir, 'data_split')
+        if not os.path.exists(split_path):
+            os.mkdir(split_path)
+
+        ParamsReadWrite.list_dump(train_lst, os.path.join(split_path, 'training_ids.txt'))
+        ParamsReadWrite.list_dump(valid_lst, os.path.join(split_path, 'validation_ids.txt'))
+        ParamsReadWrite.list_dump(test_lst, os.path.join(split_path, 'test_ids.txt'))
+    @staticmethod
+    def write_config(out_path, data_dir, epochs, batch_size, lr, weight_decay, patience):
+        config = {
+            "data_dir": data_dir,
+            "weight_decay": weight_decay,
+            "batch_size": batch_size,
+            "lr": lr,
+            "epochs": epochs,
+            "patience": patience
+        }
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+def get_create_model_dir(experiments_dir):
+    """
+    List directories in experiments_dir and find the latest index
+    Create a new index for the experiment with id=latest_id+1
+    """
+    dir_ids = os.listdir(experiments_dir)
+    max_id = 0
+    for dir_id in dir_ids:
+        try:
+            val = int(dir_id)  # handles '001', '42', '-3', etc.
+        except ValueError:
+            continue
+        if val > max_id:
+            max_id = val
+
+    dir_path= os.path.join(experiments_dir, str(max_id + 1))
+    if os.path.exists(dir_path) is False:
+        print('creating experiment directory: ' + dir_path)
+        os.mkdir(dir_path)
+
+    return dir_path
