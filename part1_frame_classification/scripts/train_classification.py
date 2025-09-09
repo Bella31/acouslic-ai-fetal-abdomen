@@ -1,3 +1,4 @@
+import math
 import os
 import torch
 from torchvision.datasets import ImageFolder
@@ -80,7 +81,35 @@ def get_dataloaders(base_path, batch_size):
     return train_loader, val_loader, test_loader
 
 
-def score_frames(model, frames_tensor, device=None):
+def score_frames(model, frames_tensor, device=None, batch_size=256):
+    """
+    batch_size:    number of frames per forward pass
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.to(device)
+    model.eval()
+
+    rng = range(0, len(frames_tensor), batch_size)
+
+    probs_chunks = []
+
+    # inference_mode is a bit lighter than no_grad for eval
+    with torch.inference_mode():
+        for i in rng:
+            batch = frames_tensor[i:i+batch_size].to(device, non_blocking=True)
+            outputs = model(batch)                    # [B, num_classes]
+            probs = torch.softmax(outputs, dim=1)     # softmax over class dim
+            probs_chunks.append(probs.cpu())          # keep on CPU to free VRAM
+
+            # (Optional) free references quickly; usually not needed but harmless
+            del batch, outputs, probs
+
+    return torch.cat(probs_chunks, dim=0).numpy()     # [N, num_classes]
+
+
+def score_frames_all_at_ones(model, frames_tensor, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
@@ -160,7 +189,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train classification model for Acouslic-AI")
     parser.add_argument("--data_dir", type=str, required=True, help="Path to balanced dataset")
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--log_dir", type=str, default="/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/network")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight decay")

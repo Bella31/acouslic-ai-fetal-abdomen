@@ -9,6 +9,17 @@ from part1_frame_classification.src.utils import load_mha_frames
 from part1_frame_classification.scripts.train_classification import score_frames
 from torchvision import transforms
 from part1_frame_classification.src.model_resnet import get_finetune_resnet_model
+from part1_frame_classification.scripts.calculate_wfss import calc_scan_wfss
+
+def get_optimal_suboptimal(scan_id, labels_df):
+    """
+    Extract optimal and subopitmal frmas of a scan and output lists
+    """
+    scan_df = labels_df[labels_df['Filename']==scan_id + ".mha"]
+    optimal_slices = scan_df.loc[labels_df["Label"] == 1, "Frame"].to_list()
+    suboptimal_slices = scan_df.loc[labels_df["Label"] == 2, "Frame"].to_list()
+
+    return optimal_slices, suboptimal_slices
 
 def read_test_scans(val_scans_path):
     frames = os.listdir(os.path.join(val_scans_path, 'irrelevant'))
@@ -20,7 +31,7 @@ def read_test_scans(val_scans_path):
         scans_set.add(name)
     return scans_set
 
-def process_val_scans(scan_dir, model, transform, val_scan_names, threshold=0.4, device=None):
+def process_scans(scan_dir, model, transform, val_scan_names, labels_df, threshold=0.0, device=None):
     results = []
     all_scan_paths = sorted(glob.glob(os.path.join(scan_dir, "*.mha")))
     for path in tqdm(all_scan_paths, desc="Processing validation scans"):
@@ -34,9 +45,16 @@ def process_val_scans(scan_dir, model, transform, val_scan_names, threshold=0.4,
             scores = probs[:, 1]  # class 1 = optimal
             max_score = np.max(scores)
             best_idx = int(np.argmax(scores)) if max_score >= threshold else -1
-            results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "score": max_score})
+            optimal_frames, suboptimal_frames = get_optimal_suboptimal(scan_id, labels_df)
+            wfss_score = calc_scan_wfss(scan_id, best_idx, labels_df)
+            print("wfss_score is: " + str(wfss_score))
+            results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "score": max_score,
+                            "optimal_frames":optimal_frames , "suboptimal_frames": suboptimal_frames,
+                            "wfss": wfss_score})
+
         except Exception as e:
             print(f"Error processing {scan_id}: {e}")
+
     return pd.DataFrame(results)
 
 def str2bool(v):
@@ -52,6 +70,7 @@ def str2bool(v):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate frame selection")
     parser.add_argument("--scan_dir", type=str, required=True, help="Path to .mha scans")
+    parser.add_argument("--labels_path", type=str, required=True, help="Path to path to labels.csv file")
     parser.add_argument("--output", type=str, required=True, help="Path to save CSV results")
     parser.add_argument("--model", type=str, required=True, help="Path to trained model")
    # parser.add_argument("--val_scans", type=str, required=True, help="CSV with validation scan names")
@@ -59,6 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_gpu", type=str2bool, default='false', help="use GPU if there is anought GPU memory")
     args = parser.parse_args()
 
+    labels_df = pd.read_csv(args.labels_path)
     # Load model
     device = torch.device("cpu")
     if args.use_gpu:
@@ -84,6 +104,6 @@ if __name__ == "__main__":
     ])
 
     # Process
-    df_results = process_val_scans(args.scan_dir, model, transform, val_scan_names, device=device)
+    df_results = process_scans(args.scan_dir, model, transform, val_scan_names, labels_df, device=device)
     df_results.to_csv(args.output, index=False)
     print(f"✅ Results saved to {args.output}")
