@@ -121,7 +121,7 @@ def score_frames_all_at_ones(model, frames_tensor, device=None):
 
 
 def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, device="cuda", model_save_path = 'model.pt',
-          metrics_path='train_metics.csv', patience = 6):
+          metrics_path='train_metics.csv', patience = 6, min_epoch = 10):
     scaler = GradScaler('cuda')
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3, factor=0.1)
     best_val_acc = 0
@@ -164,11 +164,13 @@ def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, devic
         print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f}")
         scheduler.step(val_acc)
 
-        if val_acc > best_val_acc:
+        if val_acc > best_val_acc and epoch>=min_epoch:
             best_val_acc = val_acc
             counter = 0
             torch.save(model.state_dict(), model_save_path)
             print(f" Best model saved at epoch {epoch+1} with Val Acc: {val_acc:.4f}")
+        elif epoch < min_epoch:
+            continue
         else:
             counter += 1
             if counter >= patience:
@@ -194,6 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight decay")
     parser.add_argument("--patience", type=int, default=20, help="patience")
+    parser.add_argument("--min_epoch", type=int, default=10, help="minimum epoch from which to save model")
     args = parser.parse_args()
 
     model_dir = get_create_model_dir(args.log_dir)
@@ -202,7 +205,7 @@ if __name__ == "__main__":
 
     out_cfg_path = os.path.join(model_dir, 'config.json')
     ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
-                                 args.patience)
+                                 args.patience, args.min_epoch)
     metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
     train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
@@ -221,7 +224,7 @@ if __name__ == "__main__":
     model = model.to(device)
     # Train model
     train(model, train_loader, val_loader, optimizer, criterion, epochs=args.epochs, model_save_path=model_save_path,
-          metrics_path=metrics_path, patience=args.patience)
+          metrics_path=metrics_path, patience=args.patience, min_epoch=args.min_epoch)
 
     # Evaluate on test set
     model.load_state_dict(torch.load(model_save_path, map_location=device))

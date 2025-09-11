@@ -62,7 +62,7 @@ pip install -r requirements_part1.txt
 
 #### 1. Extract Frames from MHA Files
 ```bash
-python scripts/extract_frames_from_mha.py \
+python scripts/extract_frames_from_mha_data_split.py \
     --csv path/to/labels.csv \
     --mha_dir path/to/mha/scans \
     --output path/to/output/dataset \

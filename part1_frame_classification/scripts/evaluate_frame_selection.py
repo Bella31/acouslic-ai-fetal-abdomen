@@ -75,7 +75,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, required=True, help="Path to trained model")
    # parser.add_argument("--val_scans", type=str, required=True, help="CSV with validation scan names")
     parser.add_argument("--test_scans_path", type=str, required=True, help="path to test scans")
-    parser.add_argument("--use_gpu", type=str2bool, default='false', help="use GPU if there is anought GPU memory")
+    parser.add_argument("--use_gpu", type=str2bool, default='true', help="use GPU if there is anought GPU memory")
     args = parser.parse_args()
 
     labels_df = pd.read_csv(args.labels_path)
@@ -104,6 +104,9 @@ if __name__ == "__main__":
     ])
 
     # Process
+    out_dir = os.path.dirname(args.output)
+    if os.path.exists(out_dir) is False:
+        os.mkdir(out_dir)
     df_results = process_scans(args.scan_dir, model, transform, val_scan_names, labels_df, device=device)
     df_results.to_csv(args.output, index=False)
     print(f"✅ Results saved to {args.output}")

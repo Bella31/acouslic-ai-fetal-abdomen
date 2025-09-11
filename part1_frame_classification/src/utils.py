@@ -119,14 +119,15 @@ class ParamsReadWrite:
         ParamsReadWrite.list_dump(valid_lst, os.path.join(split_path, 'validation_ids.txt'))
         ParamsReadWrite.list_dump(test_lst, os.path.join(split_path, 'test_ids.txt'))
     @staticmethod
-    def write_config(out_path, data_dir, epochs, batch_size, lr, weight_decay, patience):
+    def write_config(out_path, data_dir, epochs, batch_size, lr, weight_decay, patience, min_epoch):
         config = {
             "data_dir": data_dir,
             "weight_decay": weight_decay,
             "batch_size": batch_size,
             "lr": lr,
             "epochs": epochs,
-            "patience": patience
+            "patience": patience,
+            "min_epoch": min_epoch
         }
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
