@@ -40,7 +40,7 @@ def extract_frames_cross_valid(csv_path, mha_dir, output_dir, num_folds = 5, val
             os.mkdir(output_base)
 
         save_data_split(train_scans, val_scans, test_scans, df, mha_dir, output_base)
-        ind = num_valid_test_scans #update index for next fold
+        ind = num_valid_test_scans*(fold+1) #update index for next fold
 
 
 

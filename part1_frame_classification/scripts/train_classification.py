@@ -12,6 +12,16 @@ from PIL import Image, ImageFile
 import pandas as pd
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 def safe_pil_loader(path: str):
     """Open image as RGB; return None if it can't be read."""
     try:
@@ -45,6 +55,58 @@ class SafeImageFolder(ImageFolder):
         # if many consecutive failures, surface an error instead of looping forever
         raise RuntimeError("Too many consecutive bad images.")
 
+NAME_TO_NEW = {
+    'irrelevant': 0,
+    'optimal': 1,
+    'suboptimal':  1,
+}
+
+def make_binary_dataset(root, split, transform, name_to_new):
+    ds = ImageFolder(os.path.join(root, split), transform=transform)
+
+    # Build mapping from the dataset's original numeric label -> your new label
+    oldidx_to_newidx = {old_idx: name_to_new.get(cls_name, old_idx)
+                        for cls_name, old_idx in ds.class_to_idx.items()}
+
+    # Remap labels on-the-fly and update names
+    ds.target_transform = lambda y, m=oldidx_to_newidx: m[y]
+    new_names = {0: 'irrelevant', 1: 'relevant'}
+    ds.classes = [new_names[i] for i in sorted(set(oldidx_to_newidx.values()))]
+
+    return ds
+
+def get_binary_dataloaders(base_path, batch_size):
+    train_transform = transforms.Compose([
+        transforms.Grayscale(num_output_channels=1),
+        transforms.RandomResizedCrop(256, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(20),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2),
+        transforms.RandomAffine(degrees=10, translate=(0.05, 0.05)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5])
+    ])
+
+    val_test_transform = transforms.Compose([
+        transforms.Grayscale(num_output_channels=1),
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5])
+    ])
+
+    train_ds = make_binary_dataset(base_path, 'train', train_transform, NAME_TO_NEW)
+    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, NAME_TO_NEW)
+    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, NAME_TO_NEW)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                              num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
+                            num_workers=2, pin_memory=True)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
+                             num_workers=2, pin_memory=True)
+
+    return train_loader, val_loader, test_loader
+
 
 def get_dataloaders(base_path, batch_size):
     train_transform = transforms.Compose([
@@ -71,7 +133,7 @@ def get_dataloaders(base_path, batch_size):
     )
     val_loader = DataLoader(
         ImageFolder(os.path.join(base_path, 'val'), transform=val_test_transform),
-        batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
+        batch_sGize=batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
     test_loader = DataLoader(
         ImageFolder(os.path.join(base_path, 'test'), transform=val_test_transform),
@@ -121,7 +183,7 @@ def score_frames_all_at_ones(model, frames_tensor, device=None):
 
 
 def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, device="cuda", model_save_path = 'model.pt',
-          metrics_path='train_metics.csv', patience = 6, min_epoch = 10):
+          metrics_path='train_metics.csv', patience = 6, min_epoch = 10, apply_mixup = True):
     scaler = GradScaler('cuda')
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3, factor=0.1)
     best_val_acc = 0
@@ -144,9 +206,13 @@ def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, devic
 
             optimizer.zero_grad()
             with autocast('cuda'):
-                mixed_images, targets_a, targets_b, lam = mixup_data(images, labels)
-                outputs = model(mixed_images)
-                loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+                if apply_mixup:
+                    mixed_images, targets_a, targets_b, lam = mixup_data(images, labels)
+                    outputs = model(mixed_images)
+                    loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -197,21 +263,28 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight decay")
     parser.add_argument("--patience", type=int, default=20, help="patience")
     parser.add_argument("--min_epoch", type=int, default=10, help="minimum epoch from which to save model")
+    parser.add_argument("--apply_mixup", type=str2bool, default=False, help="patience")
+    parser.add_argument("--num_classes", type=int, default=3, help="patience")
+
     args = parser.parse_args()
 
     model_dir = get_create_model_dir(args.log_dir)
-    model_save_path = os.path.join(model_dir, 'resnet50_3class.pt')
+    model_save_path = os.path.join(model_dir, 'model.pt')
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
 
     out_cfg_path = os.path.join(model_dir, 'config.json')
     ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
-                                 args.patience, args.min_epoch)
+                                 args.patience, args.min_epoch, args.apply_mixup, args.num_classes)
     metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
-    train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
-
+    if args.num_classes == 3:
+        train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
+    elif args.num_classes == 2:
+        train_loader, val_loader, test_loader = get_binary_dataloaders(args.data_dir, args.batch_size)
+    else:
+        print('number of classes ' + str(args.num_classes + ' is not supported'))
     # Initialize model and optimizer
-    model = get_finetune_resnet_model(num_classes=3)
+    model = get_finetune_resnet_model(num_classes=args.num_classes)
     criterion = FocalLoss()
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -224,7 +297,7 @@ if __name__ == "__main__":
     model = model.to(device)
     # Train model
     train(model, train_loader, val_loader, optimizer, criterion, epochs=args.epochs, model_save_path=model_save_path,
-          metrics_path=metrics_path, patience=args.patience, min_epoch=args.min_epoch)
+          metrics_path=metrics_path, patience=args.patience, min_epoch=args.min_epoch, apply_mixup=args.apply_mixup)
 
     # Evaluate on test set
     model.load_state_dict(torch.load(model_save_path, map_location=device))

@@ -8,7 +8,7 @@ if __name__ == "__main__":
     folds = 5
     data_path = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/cross_valid_folds'
     model_dir = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/network'
-    model_dirnames = [8,9,10,11,12]
+    model_dirnames = [13,14,15,16,17]
     scan_dir = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/acouslic-ai-train-set/images/stacked_fetal_ultrasound'
     labels_path = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/labels.csv'#for test, use the original labels file that includes all frames!
 

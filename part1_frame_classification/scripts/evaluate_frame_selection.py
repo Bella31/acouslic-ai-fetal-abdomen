@@ -31,6 +31,13 @@ def read_test_scans(val_scans_path):
         scans_set.add(name)
     return scans_set
 
+# def get_top_slices(probs, 5):
+#     """
+#     Calculate top 5 slices and their predicted quality
+#     """
+
+
+
 def process_scans(scan_dir, model, transform, val_scan_names, labels_df, threshold=0.0, device=None):
     results = []
     all_scan_paths = sorted(glob.glob(os.path.join(scan_dir, "*.mha")))
@@ -42,6 +49,7 @@ def process_scans(scan_dir, model, transform, val_scan_names, labels_df, thresho
             print('processing scan ' + scan_id)
             frames_tensor = load_mha_frames(path, transform)
             probs = score_frames(model, frames_tensor, device)
+       #     top_5_slices, top_5_quality = get_top_slices(probs, 5)
             scores = probs[:, 1]  # class 1 = optimal
             max_score = np.max(scores)
             best_idx = int(np.argmax(scores)) if max_score >= threshold else -1
