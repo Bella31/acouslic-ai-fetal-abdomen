@@ -84,6 +84,7 @@ if __name__ == "__main__":
    # parser.add_argument("--val_scans", type=str, required=True, help="CSV with validation scan names")
     parser.add_argument("--test_scans_path", type=str, required=True, help="path to test scans")
     parser.add_argument("--use_gpu", type=str2bool, default='true', help="use GPU if there is anought GPU memory")
+    parser.add_argument("--num_classes", type=int, default=3, help="patience")
     args = parser.parse_args()
 
     labels_df = pd.read_csv(args.labels_path)
@@ -92,7 +93,7 @@ if __name__ == "__main__":
     if args.use_gpu:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = get_finetune_resnet_model(device=device)
+    model = get_finetune_resnet_model(device=device, num_classes=args.num_classes)
     if device == "cpu":
         model = model.float()
     model.load_state_dict(torch.load(args.model, map_location=device))

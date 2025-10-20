@@ -3,6 +3,7 @@ import os
 import torch
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
+from torch.nn import CrossEntropyLoss
 from torchvision import transforms
 from part1_frame_classification.src.model_resnet import get_finetune_resnet_model
 from part1_frame_classification.src.utils import (FocalLoss, mixup_data, mixup_criterion, evaluate,
@@ -61,6 +62,12 @@ NAME_TO_NEW = {
     'suboptimal':  1,
 }
 
+NAME_TO_NEW_OPT = {
+    'irrelevant': 0,
+    'optimal': 1,
+    'suboptimal':  0,
+}
+
 def make_binary_dataset(root, split, transform, name_to_new):
     ds = ImageFolder(os.path.join(root, split), transform=transform)
 
@@ -75,7 +82,7 @@ def make_binary_dataset(root, split, transform, name_to_new):
 
     return ds
 
-def get_binary_dataloaders(base_path, batch_size):
+def get_binary_dataloaders(base_path, batch_size, opt_only):
     train_transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=1),
         transforms.RandomResizedCrop(256, scale=(0.8, 1.0)),
@@ -93,10 +100,13 @@ def get_binary_dataloaders(base_path, batch_size):
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5])
     ])
-
-    train_ds = make_binary_dataset(base_path, 'train', train_transform, NAME_TO_NEW)
-    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, NAME_TO_NEW)
-    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, NAME_TO_NEW)
+    if opt_only:
+        mapping = NAME_TO_NEW_OPT
+    else:
+        mapping = NAME_TO_NEW
+    train_ds = make_binary_dataset(base_path, 'train', train_transform, mapping)
+    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, mapping)
+    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, mapping)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=2, pin_memory=True)
@@ -263,8 +273,11 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight decay")
     parser.add_argument("--patience", type=int, default=20, help="patience")
     parser.add_argument("--min_epoch", type=int, default=10, help="minimum epoch from which to save model")
-    parser.add_argument("--apply_mixup", type=str2bool, default=False, help="patience")
+    parser.add_argument("--apply_mixup", type=str2bool, default=False, help="shouls apply mixup")
+    parser.add_argument("--opt_only", type=str2bool, default=False, help="should only optimal frames"
+                                                                         " considered as 1 for binary classification")
     parser.add_argument("--num_classes", type=int, default=3, help="patience")
+    parser.add_argument("--loss", type=str, default="focal", help="patience")
 
     args = parser.parse_args()
 
@@ -274,18 +287,21 @@ if __name__ == "__main__":
 
     out_cfg_path = os.path.join(model_dir, 'config.json')
     ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
-                                 args.patience, args.min_epoch, args.apply_mixup, args.num_classes)
+                                 args.patience, args.min_epoch, args.apply_mixup, args.num_classes, args.loss)
     metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
     if args.num_classes == 3:
         train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
     elif args.num_classes == 2:
-        train_loader, val_loader, test_loader = get_binary_dataloaders(args.data_dir, args.batch_size)
+        train_loader, val_loader, test_loader = get_binary_dataloaders(args.data_dir, args.batch_size, args.opt_only)
     else:
         print('number of classes ' + str(args.num_classes + ' is not supported'))
     # Initialize model and optimizer
     model = get_finetune_resnet_model(num_classes=args.num_classes)
-    criterion = FocalLoss()
+    if args.loss == 'focal':
+        criterion = FocalLoss()
+    elif args.loss =='CE':
+        criterion = CrossEntropyLoss()
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr,
