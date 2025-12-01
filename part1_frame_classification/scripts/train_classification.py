@@ -1,4 +1,3 @@
-import math
 import os
 import torch
 from torchvision.datasets import ImageFolder
@@ -7,21 +6,11 @@ from torch.nn import CrossEntropyLoss
 from torchvision import transforms
 from part1_frame_classification.src.model_resnet import get_finetune_resnet_model
 from part1_frame_classification.src.utils import (FocalLoss, mixup_data, mixup_criterion, evaluate,
-                                                  get_create_model_dir, ParamsReadWrite)
+                                                  get_create_model_dir, ParamsReadWrite, str2bool)
 from torch.amp import autocast, GradScaler
-from PIL import Image, ImageFile
+from PIL import Image
 import pandas as pd
 
-
-def str2bool(v):
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def safe_pil_loader(path: str):
     """Open image as RGB; return None if it can't be read."""
@@ -67,8 +56,13 @@ NAME_TO_NEW_OPT = {
     'optimal': 1,
     'suboptimal':  0,
 }
+#expects to use data with only positive examples
+NAME_TO_NEW_POS = {
+    'suboptimal':  0,
+    'optimal': 1
+}
 
-def make_binary_dataset(root, split, transform, name_to_new):
+def make_binary_dataset(root, split, transform, name_to_new, pos_only):
     ds = ImageFolder(os.path.join(root, split), transform=transform)
 
     # Build mapping from the dataset's original numeric label -> your new label
@@ -77,12 +71,15 @@ def make_binary_dataset(root, split, transform, name_to_new):
 
     # Remap labels on-the-fly and update names
     ds.target_transform = lambda y, m=oldidx_to_newidx: m[y]
-    new_names = {0: 'irrelevant', 1: 'relevant'}
+    if pos_only:
+        new_names = {0: 'suboptimal', 1: 'optimal'}
+    else:
+        new_names = {0: 'irrelevant', 1: 'relevant'}
     ds.classes = [new_names[i] for i in sorted(set(oldidx_to_newidx.values()))]
 
     return ds
 
-def get_binary_dataloaders(base_path, batch_size, opt_only):
+def get_binary_dataloaders(base_path, batch_size, opt_only, pos_only):
     train_transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=1),
         transforms.RandomResizedCrop(256, scale=(0.8, 1.0)),
@@ -102,11 +99,13 @@ def get_binary_dataloaders(base_path, batch_size, opt_only):
     ])
     if opt_only:
         mapping = NAME_TO_NEW_OPT
+    elif pos_only:
+        mapping = NAME_TO_NEW_POS
     else:
         mapping = NAME_TO_NEW
-    train_ds = make_binary_dataset(base_path, 'train', train_transform, mapping)
-    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, mapping)
-    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, mapping)
+    train_ds = make_binary_dataset(base_path, 'train', train_transform, mapping, pos_only)
+    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, mapping, pos_only)
+    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, mapping, pos_only)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=2, pin_memory=True)
@@ -143,7 +142,7 @@ def get_dataloaders(base_path, batch_size):
     )
     val_loader = DataLoader(
         ImageFolder(os.path.join(base_path, 'val'), transform=val_test_transform),
-        batch_sGize=batch_size, shuffle=False, num_workers=2, pin_memory=True
+        batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
     test_loader = DataLoader(
         ImageFolder(os.path.join(base_path, 'test'), transform=val_test_transform),
@@ -276,6 +275,8 @@ if __name__ == "__main__":
     parser.add_argument("--apply_mixup", type=str2bool, default=False, help="shouls apply mixup")
     parser.add_argument("--opt_only", type=str2bool, default=False, help="should only optimal frames"
                                                                          " considered as 1 for binary classification")
+    parser.add_argument("--pos_only", type=str2bool, default=False, help="Should we train a network"
+                                                                         " only on positive samples")
     parser.add_argument("--num_classes", type=int, default=3, help="patience")
     parser.add_argument("--loss", type=str, default="focal", help="patience")
 
@@ -287,13 +288,15 @@ if __name__ == "__main__":
 
     out_cfg_path = os.path.join(model_dir, 'config.json')
     ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
-                                 args.patience, args.min_epoch, args.apply_mixup, args.num_classes, args.loss)
+                                 args.patience, args.min_epoch, args.apply_mixup, args.num_classes, args.loss,
+                                 args.pos_only, args.opt_only)
     metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
     if args.num_classes == 3:
         train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
     elif args.num_classes == 2:
-        train_loader, val_loader, test_loader = get_binary_dataloaders(args.data_dir, args.batch_size, args.opt_only)
+        train_loader, val_loader, test_loader = get_binary_dataloaders(args.data_dir, args.batch_size, args.opt_only,
+                                                                       args.pos_only)
     else:
         print('number of classes ' + str(args.num_classes + ' is not supported'))
     # Initialize model and optimizer

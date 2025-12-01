@@ -31,7 +31,7 @@ def get_frame_labels_from_mask(mask_path):
     return labels
 
 
-def calc_scan_wfss(scan_id, selected, labels_df = None, mask_dir=None):
+def calc_scan_wfss_accuracy(scan_id, selected, labels_df = None, mask_dir=None):
 
     if labels_df is not None:
         frame_labels = get_frame_labels(scan_id, labels_df)
@@ -43,20 +43,55 @@ def calc_scan_wfss(scan_id, selected, labels_df = None, mask_dir=None):
     else:
         frame_labels = None
     if selected == -1 or selected >= len(frame_labels):
-        return 0.0
+        return 0.0, 0.0
     label = frame_labels[selected]
     has_optimal = "optimal" in frame_labels
     if label == "optimal":
-        score = 1.0
+        score_wfss = 1.0
+        score_accuracy = 1.0
     elif label == "suboptimal" and (has_optimal is False):
-        score = 1.0
+        score_wfss = 1.0
+        score_accuracy = 1.0
     elif label == "suboptimal" and has_optimal:
-        score = 0.6
+        score_wfss = 0.6
+        score_accuracy = 0.0
     else:
-        score = 0.0
+        score_wfss = 0.0
+        score_accuracy = 0.0
 
-    return score
+    return score_wfss, score_accuracy
 
+def calc_top_k_scan_wfss_accuracy(scan_id, selected_cases, labels_df = None, mask_dir=None):
+    """
+    Calculate wfss for top 5 selected frames
+    """
+    if labels_df is not None:
+        frame_labels = get_frame_labels(scan_id, labels_df)
+    elif mask_dir is not None:
+        mask_path = os.path.join(mask_dir, scan_id)
+        if not os.path.exists(mask_path):
+            return
+        frame_labels = get_frame_labels_from_mask(mask_path)
+    else:
+        frame_labels = None
+    frame_labels = np.asarray(frame_labels)
+    selected_cases = np.asarray(selected_cases).ravel().astype(int)
+    selected_frames = frame_labels[selected_cases]
+    has_optimal = "optimal" in frame_labels
+    if "optimal" in selected_frames:
+        score_wfss = 1.0
+        score_accuracy = 1.0
+    elif (has_optimal is False) and "suboptimal" in selected_frames:
+        score_wfss = 1.0
+        score_accuracy = 1.0
+    elif "suboptimal" in selected_frames:
+        score_wfss = 0.6
+        score_accuracy = 0.0
+    else:
+        score_wfss = 0.0
+        score_accuracy = 0.0
+
+    return score_wfss, score_accuracy
 
 def calculate_wfss(predictions_csv, mask_dir=None, labels_df=None):
     pred_df = pd.read_csv(predictions_csv)

@@ -5,11 +5,12 @@ import pandas as pd
 from tqdm import tqdm
 import argparse
 import torch
-from part1_frame_classification.src.utils import load_mha_frames
+from part1_frame_classification.src.utils import load_mha_frames, ParamsReadWrite
 from part1_frame_classification.scripts.train_classification import score_frames
 from torchvision import transforms
 from part1_frame_classification.src.model_resnet import get_finetune_resnet_model
-from part1_frame_classification.scripts.calculate_wfss import calc_scan_wfss
+from part1_frame_classification.scripts.calculate_wfss import  \
+    calc_scan_wfss_accuracy, calc_top_k_scan_wfss_accuracy
 
 def get_optimal_suboptimal(scan_id, labels_df):
     """
@@ -31,14 +32,8 @@ def read_test_scans(val_scans_path):
         scans_set.add(name)
     return scans_set
 
-# def get_top_slices(probs, 5):
-#     """
-#     Calculate top 5 slices and their predicted quality
-#     """
 
-
-
-def process_scans(scan_dir, model, transform, val_scan_names, labels_df, threshold=0.0, device=None):
+def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df, threshold=0.0, device=None):
     results = []
     all_scan_paths = sorted(glob.glob(os.path.join(scan_dir, "*.mha")))
     for path in tqdm(all_scan_paths, desc="Processing validation scans"):
@@ -51,14 +46,31 @@ def process_scans(scan_dir, model, transform, val_scan_names, labels_df, thresho
             probs = score_frames(model, frames_tensor, device)
        #     top_5_slices, top_5_quality = get_top_slices(probs, 5)
             scores = probs[:, 1]  # class 1 = optimal
-            max_score = np.max(scores)
-            best_idx = int(np.argmax(scores)) if max_score >= threshold else -1
+            idx3 = np.argpartition(scores, -3)[-3:]
+            idx3 = idx3[np.argsort(scores[idx3])[::-1]]
+            idx5 = np.argpartition(scores, -5)[-5:]
+            idx5 = idx5[np.argsort(scores[idx5])[::-1]]  # sort by value desc
+            #if there is a second network, use top 5
+            if model2 is not None:
+                probs2 = score_frames(model2, frames_tensor[idx5], device)
+                scores = probs2[:, 1] #class 1- optimal
+                max_score = np.max(scores)
+                best_idx2 = int(np.argmax(scores))
+                best_idx =   idx5[best_idx2]
+                idx3 = idx5[np.argsort(scores)[::-1]][:3]
+            else:
+                max_score = np.max(scores)
+                best_idx = int(np.argmax(scores)) if max_score >= threshold else -1
             optimal_frames, suboptimal_frames = get_optimal_suboptimal(scan_id, labels_df)
-            wfss_score = calc_scan_wfss(scan_id, best_idx, labels_df)
+            wfss_score, accuracy = calc_scan_wfss_accuracy(scan_id, best_idx, labels_df)
+            wfss_score_top_3, accuracy_top3 = calc_top_k_scan_wfss_accuracy(scan_id, idx3, labels_df)
+            wfss_score_top_5, accuracy_top5 = calc_top_k_scan_wfss_accuracy(scan_id, idx5, labels_df)
             print("wfss_score is: " + str(wfss_score))
-            results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "score": max_score,
+            print("Top 5 wfss_score is: " + str(wfss_score_top_5))
+            results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "top_5": idx5,"score": max_score,
                             "optimal_frames":optimal_frames , "suboptimal_frames": suboptimal_frames,
-                            "wfss": wfss_score})
+                            "wfss": wfss_score, "wfss_top3": wfss_score_top_3,"wfss_top5": wfss_score_top_5,
+                            "accuracy": accuracy, "accuracy_top3": accuracy_top3,  "accuracy_top5": accuracy_top5})
 
         except Exception as e:
             print(f"Error processing {scan_id}: {e}")
@@ -81,8 +93,10 @@ if __name__ == "__main__":
     parser.add_argument("--labels_path", type=str, required=True, help="Path to path to labels.csv file")
     parser.add_argument("--output", type=str, required=True, help="Path to save CSV results")
     parser.add_argument("--model", type=str, required=True, help="Path to trained model")
+    parser.add_argument("--model2", type=str, default=None, help="Path to the second trained model if exists")
    # parser.add_argument("--val_scans", type=str, required=True, help="CSV with validation scan names")
-    parser.add_argument("--test_scans_path", type=str, required=True, help="path to test scans")
+    parser.add_argument("--test_scans_path", type=str, default=None, help="path to test scans folder")
+    parser.add_argument("--test_scans_lst_path", type=str, default=None, help="path to test scans list")
     parser.add_argument("--use_gpu", type=str2bool, default='true', help="use GPU if there is anought GPU memory")
     parser.add_argument("--num_classes", type=int, default=3, help="patience")
     args = parser.parse_args()
@@ -99,10 +113,19 @@ if __name__ == "__main__":
     model.load_state_dict(torch.load(args.model, map_location=device))
     model.eval()
 
-    # Load val scans
- #   val_df = pd.read_csv(args.val_scans)
-#    val_scan_names = set([scan.replace('.mha', '') for scan in val_df['Filename'].unique()])
-    val_scan_names = read_test_scans(args.test_scans_path)
+    if args.model2 is not None:
+        model2 = get_finetune_resnet_model(device=device, num_classes=args.num_classes)
+        if device == "cpu":
+            model2 = model2.float()
+        model2.load_state_dict(torch.load(args.model2, map_location=device))
+        model2.eval()
+    else:
+        model2 = None
+    #either provide test folder or test cases list
+    if args.test_scans_path is not None:
+        val_scan_names = read_test_scans(args.test_scans_path)
+    else:
+        val_scan_names = ParamsReadWrite.list_load(args.test_scans_lst_path)
 
     # Define transform
     transform = transforms.Compose([
@@ -116,6 +139,6 @@ if __name__ == "__main__":
     out_dir = os.path.dirname(args.output)
     if os.path.exists(out_dir) is False:
         os.mkdir(out_dir)
-    df_results = process_scans(args.scan_dir, model, transform, val_scan_names, labels_df, device=device)
+    df_results = process_scans(args.scan_dir, model, model2, transform, val_scan_names, labels_df, device=device)
     df_results.to_csv(args.output, index=False)
     print(f"✅ Results saved to {args.output}")

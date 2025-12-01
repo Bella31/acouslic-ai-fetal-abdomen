@@ -1,3 +1,5 @@
+import argparse
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -20,7 +22,7 @@ class FocalLoss(nn.Module):
         return focal_loss.mean()
 
 
-def mixup_data(x, y, alpha=0.2):
+def mixup_data(x, y, alpha=0.1):
     lam = np.random.beta(alpha, alpha)
     index = torch.randperm(x.size(0)).to(x.device)
     mixed_x = lam * x + (1 - lam) * x[index, :]
@@ -120,7 +122,7 @@ class ParamsReadWrite:
         ParamsReadWrite.list_dump(test_lst, os.path.join(split_path, 'test_ids.txt'))
     @staticmethod
     def write_config(out_path, data_dir, epochs, batch_size, lr, weight_decay, patience, min_epoch, apply_mixup,
-                     num_classes, loss):
+                     num_classes, loss, pos_only, opt_only):
         config = {
             "data_dir": data_dir,
             "weight_decay": weight_decay,
@@ -131,7 +133,9 @@ class ParamsReadWrite:
             "min_epoch": min_epoch,
             "apply_mixup": str(apply_mixup),
             "num_classes": num_classes,
-            "loss": loss
+            "loss": loss,
+            "pos_only": pos_only,
+            "opt_only": opt_only
         }
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -159,3 +163,14 @@ def get_create_model_dir(experiments_dir):
         os.mkdir(dir_path)
 
     return dir_path
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
