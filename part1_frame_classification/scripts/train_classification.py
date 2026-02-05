@@ -4,9 +4,10 @@ from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
 from torch.nn import CrossEntropyLoss
 from torchvision import transforms
-from part1_frame_classification.src.model_resnet import get_finetune_resnet_model
+from part1_frame_classification.src.models import get_finetune_resnet_model, get_finetune_densenet121_gray, \
+    get_finetune_convnext_small, get_finetune_efficientnetv2_s_gray
 from part1_frame_classification.src.utils import (FocalLoss, mixup_data, mixup_criterion, evaluate,
-                                                  get_create_model_dir, ParamsReadWrite, str2bool)
+                                                  get_create_model_dir, ParamsReadWrite, str2bool, CEWFSSLoss)
 from torch.amp import autocast, GradScaler
 from PIL import Image
 import pandas as pd
@@ -190,6 +191,33 @@ def score_frames_all_at_ones(model, frames_tensor, device=None):
         probs = torch.softmax(outputs, dim=1).cpu().numpy()
     return probs
 
+def build_model(model_name: str, num_classes: int, device):
+    model_name = model_name.lower()
+
+    if model_name == "efficientnet":
+        return get_finetune_efficientnetv2_s_gray(
+            num_classes=num_classes, pretrained=True, device=device
+        )
+
+    elif model_name == "convnext":
+        return get_finetune_convnext_small(
+            num_classes=num_classes, pretrained=True, device=device
+        )
+
+    elif model_name == "densenet":
+        return get_finetune_densenet121_gray(
+            num_classes=num_classes, pretrained=True, device=device
+        )
+
+    elif model_name == "resnet":
+        return get_finetune_resnet_model(
+            num_classes=num_classes, pretrained=True, grayscale=True, device=device
+        )
+
+    else:
+        raise ValueError(f" Unknown model: {model_name}. "
+                         f"Choose: efficientnet / convnext / densenet / resnet")
+
 
 def train(model, train_loader, val_loader, optimizer, criterion, epochs=5, device="cuda", model_save_path = 'model.pt',
           metrics_path='train_metics.csv', patience = 6, min_epoch = 10, apply_mixup = True):
@@ -279,6 +307,7 @@ if __name__ == "__main__":
                                                                          " only on positive samples")
     parser.add_argument("--num_classes", type=int, default=3, help="patience")
     parser.add_argument("--loss", type=str, default="focal", help="patience")
+    parser.add_argument("--model_name", type=str, default="resnet", help="model name")
 
     args = parser.parse_args()
 
@@ -289,7 +318,7 @@ if __name__ == "__main__":
     out_cfg_path = os.path.join(model_dir, 'config.json')
     ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
                                  args.patience, args.min_epoch, args.apply_mixup, args.num_classes, args.loss,
-                                 args.pos_only, args.opt_only)
+                                 args.pos_only, args.opt_only, args.model_name)
     metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
     if args.num_classes == 3:
@@ -300,11 +329,16 @@ if __name__ == "__main__":
     else:
         print('number of classes ' + str(args.num_classes + ' is not supported'))
     # Initialize model and optimizer
-    model = get_finetune_resnet_model(num_classes=args.num_classes)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = build_model(model_name=args.model_name, num_classes=args.num_classes, device=device)
+  #  model = get_finetune_resnet_model(num_classes=args.num_classes)
+
     if args.loss == 'focal':
         criterion = FocalLoss()
     elif args.loss =='CE':
         criterion = CrossEntropyLoss()
+    elif args.loss == 'CE_WFSS':
+        criterion = CEWFSSLoss(idx_opt=1, idx_sub=2)
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr,

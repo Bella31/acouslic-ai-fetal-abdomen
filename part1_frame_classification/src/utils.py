@@ -1,5 +1,5 @@
 import argparse
-
+import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import numpy as np
@@ -21,6 +21,62 @@ class FocalLoss(nn.Module):
         focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
         return focal_loss.mean()
 
+class WFSSFrameSurrogateLoss(nn.Module):
+# For each sample i:
+#         reward_i = w[y_i] * p(y_i | x_i)
+#     where w[irrelevant]=0, w[sub]=subopt_score, w[opt]=1.
+#     We minimize 1 - mean(reward), i.e. maximize weighted correct probability.
+    def __init__(self, idx_opt: int, idx_sub: int, subopt_score: float = 0.6):
+        super().__init__()
+        self.idx_opt = int(idx_opt)
+        self.idx_sub = int(idx_sub)
+        self.subopt_score = float(subopt_score)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = F.softmax(logits, dim=1)
+        C = probs.size(1)
+
+        if C <= max(self.idx_opt, self.idx_sub):
+            raise ValueError("WFSSFrameSurrogateLoss: class indices out of range.")
+
+        # class weights: irrelevant=0, sub=subopt_score, opt=1
+        weights = torch.zeros(C, device=probs.device, dtype=probs.dtype)
+        weights[self.idx_sub] = self.subopt_score
+        weights[self.idx_opt] = 1.0
+
+        # p(correct class)
+        idx = torch.arange(logits.size(0), device=probs.device)
+        p_correct = probs[idx, targets]
+
+        # reward for each sample
+        w_correct = weights[targets]
+        reward = w_correct * p_correct  # in [0, 1]
+
+        # we want to maximize reward -> minimize (1 - reward)
+        return 1.0 - reward.mean()
+
+class CEWFSSLoss(nn.Module):
+    #L = ce_weight * CE + wfss_weight * WFSS_surrogate
+    def __init__(self,
+                 idx_opt: int,
+                 idx_sub: int,
+                 subopt_score: float = 0.6,
+                 ce_weight: float = 1.0,
+                 wfss_weight: float = 0.3,
+                 label_smoothing: float = 0.0):
+        super().__init__()
+        ls = max(0.0, min(0.99, float(label_smoothing)))
+        self.ce = nn.CrossEntropyLoss(label_smoothing=ls)
+        self.wfss = WFSSFrameSurrogateLoss(idx_opt=idx_opt,
+                                           idx_sub=idx_sub,
+                                           subopt_score=subopt_score)
+        self.ce_weight = float(ce_weight)
+        self.wfss_weight = float(wfss_weight)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        loss_ce = self.ce(logits, targets)
+        loss_wfss = self.wfss(logits, targets)
+        return self.ce_weight * loss_ce + self.wfss_weight * loss_wfss
 
 def mixup_data(x, y, alpha=0.1):
     lam = np.random.beta(alpha, alpha)
@@ -122,7 +178,7 @@ class ParamsReadWrite:
         ParamsReadWrite.list_dump(test_lst, os.path.join(split_path, 'test_ids.txt'))
     @staticmethod
     def write_config(out_path, data_dir, epochs, batch_size, lr, weight_decay, patience, min_epoch, apply_mixup,
-                     num_classes, loss, pos_only, opt_only):
+                     num_classes, loss, pos_only, opt_only, model_name):
         config = {
             "data_dir": data_dir,
             "weight_decay": weight_decay,
@@ -135,7 +191,8 @@ class ParamsReadWrite:
             "num_classes": num_classes,
             "loss": loss,
             "pos_only": pos_only,
-            "opt_only": opt_only
+            "opt_only": opt_only,
+            "model_name": model_name
         }
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
