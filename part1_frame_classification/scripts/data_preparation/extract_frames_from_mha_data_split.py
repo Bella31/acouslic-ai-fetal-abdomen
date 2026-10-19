@@ -78,7 +78,7 @@ def save_data_split(train_scans, val_scans, test_scans, df, mha_dir, output_base
                 #     frame8 = np.zeros_like(frame, dtype=np.uint8)
 
                 im = Image.fromarray(frame).convert("L")
-                im.save(out_path)  # PNG = lossless
+                im.save(out_path)
                 im.close()
                 saved_count += 1
 

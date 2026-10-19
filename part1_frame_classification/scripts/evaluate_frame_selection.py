@@ -4,6 +4,7 @@ import glob
 import time
 import numpy as np
 import pandas as pd
+from numpy.f2py.auxfuncs import throw_error
 from tqdm import tqdm
 import argparse
 import torch
@@ -38,7 +39,34 @@ def read_test_scans(val_scans_path):
         scans_set.add(name)
     return scans_set
 
-def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, probs2 = None, idx_rel = None):
+def calc_precision_recall_from_conf_df(cm):
+    """
+    Calculate precision, recall and F1 confusion matrix with two classes
+    """
+    TP = cm.iloc[1, 1]
+    FN = cm.iloc[1, 0]
+    FP = cm.iloc[0, 1]
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall)
+
+    return  precision, recall, f1
+
+def calc_precision_recall_from_conf(cm):
+    """
+    Calculate precision, recall and F1 confusion matrix with two classes
+    """
+    TP = cm[1, 1]
+    FN = cm[1, 0]
+    FP = cm[0, 1]
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall)
+
+    return  precision, recall, f1
+
+
+def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, probs2 = None, idx_rel = None, rel_only=False):
     """
     Calculate precision, recall and F1 metrics from all scan slices
     Also produces confusion matrix for the scan
@@ -52,34 +80,28 @@ def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr
         predictions2[predictions2==0] = 2 #the 0 here corresponds to suboptimal slice with value of 2
         predictions[idx_rel] = predictions2
     #calculate precision and recall when only optimal examples are used
-    mapping = {0: 0, 1: 1, 2: 0}
-    y_true_merged = np.vectorize(mapping.get)(gt)
-    y_pred_merged = np.vectorize(mapping.get)(predictions)
-    conf_matrix_opt_only = confusion_matrix(y_true_merged, y_pred_merged)
-    TP = conf_matrix_opt_only[1, 1]
-    FN = conf_matrix_opt_only[1, 0]
-    FP = conf_matrix_opt_only[0, 1]
-    precision_opt_only = TP / (TP + FP) if (TP + FP) > 0 else 0
-    recall_opt_only = TP / (TP + FN) if (TP + FN) > 0 else 0
-    f1_opt_only = 2 * (precision_opt_only * recall_opt_only) / (precision_opt_only + recall_opt_only)
-
+    if rel_only is False:
+        mapping = {0: 0, 1: 1, 2: 0}
+        y_true_merged = np.vectorize(mapping.get)(gt)
+        y_pred_merged = np.vectorize(mapping.get)(predictions)
+        conf_matrix_opt_only = confusion_matrix(y_true_merged, y_pred_merged)
+        precision_opt_only, recall_opt_only, f1_opt_only = calc_precision_recall_from_conf(conf_matrix_opt_only)
+    else:
+        precision_opt_only = -1
+        recall_opt_only = -1
+        f1_opt_only = -1
     #calculate precision and recall when both optimal and suboptimal are used
     mapping = {0: 0, 1: 1, 2: 1}
     y_true_merged = np.vectorize(mapping.get)(gt)
     y_pred_merged = np.vectorize(mapping.get)(predictions)
-    conf_matrix_opt_only = confusion_matrix(y_true_merged, y_pred_merged)
-    TP = conf_matrix_opt_only[1, 1]
-    FN = conf_matrix_opt_only[1, 0]
-    FP = conf_matrix_opt_only[0, 1]
-    precision_opt_subopt = TP / (TP + FP) if (TP + FP) > 0 else 0
-    recall_opt_subopt = TP / (TP + FN) if (TP + FN) > 0 else 0
-    f1_opt_subopt = 2 * (precision_opt_subopt * recall_opt_subopt) / (precision_opt_subopt + recall_opt_subopt)
+    conf_matrix_opt_subopt = confusion_matrix(y_true_merged, y_pred_merged)
+    precision_opt_subopt, recall_opt_subopt, f1_opt_subopt = calc_precision_recall_from_conf(conf_matrix_opt_subopt)
 
     return gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt, f1_opt_subopt
 
 
 def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df, threshold=0.0, device=None,
-                  top_5 = True):
+                  top_5 = True, rel_only = False):
     """
     Apply inference and perform all evaluations
     Output 3 dataframes: one for top slices selection, ont with precision and recall and a total confusion matrix
@@ -92,57 +114,59 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
         scan_id = os.path.basename(path).replace('.mha', '')
         if scan_id not in val_scan_names:
             continue
-        try:
-            print('processing scan ' + scan_id)
-            frames_tensor = load_mha_frames(path, transform)
-            start = time.perf_counter()
-            probs = score_frames(model, frames_tensor, device)
-       #     top_5_slices, top_5_quality = get_top_slices(probs, 5)
-            scores = probs[:, 1]  # class 1 = optimal
-            idx5 = np.argpartition(scores, -5)[-5:]
-            idx5 = idx5[np.argsort(scores[idx5])[::-1]]  # sort by value desc
-            probs2 = None
-            idx_all = None
-            if model2 is not None:
-                if top_5:
-                    idx_all = idx5
-                else: #apply inference of the second network on all relevant frames
-                    predictions = np.argmax(probs, axis=1)
-                    idx_all = np.where(predictions == 1)[0]
-                probs2 = score_frames(model2, frames_tensor[idx_all], device)
-                best_idx, idx3, idx5, max_score = calc_top_1_5(idx_all, probs2, scores, threshold)
-            else:
-                idx3 = np.argpartition(scores, -3)[-3:]
-                idx3 = idx3[np.argsort(scores[idx3])[::-1]]
-                max_score = np.max(scores)
-                best_idx = int(np.argmax(scores))
 
-            end = time.perf_counter()
-            running_time = end-start
-            print(f"running time is: {running_time}")
-            optimal_frames, suboptimal_frames = get_optimal_suboptimal(scan_id, labels_df)
-            (gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt,
-             f1_opt_subopt) = calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, probs2, idx_all)
-            for t, p in zip(gt, predictions):
-                cm_total[t, p] += 1
-            precision_recall_res.append({"scan": scan_id + ".mha", "precision_opt_only": precision_opt_only,
-                                         "recall_opt_only": recall_opt_only, "F1_opt_only": f1_opt_only,
-                                         "precision_opt_subopt": precision_opt_subopt, "recall_opt_subopt": recall_opt_subopt,
-                                         "F1_opt_subopt": f1_opt_subopt,"num_total": len(probs[:,0]),
-                                         "num_opt": len(optimal_frames), "num_subopt": len(suboptimal_frames)})
-            wfss_score, accuracy = calc_scan_wfss_accuracy(scan_id, best_idx, labels_df)
-            wfss_score_top_3, accuracy_top3 = calc_top_k_scan_wfss_accuracy(scan_id, idx3, labels_df)
-            wfss_score_top_5, accuracy_top5 = calc_top_k_scan_wfss_accuracy(scan_id, idx5, labels_df)
-            print("wfss_score is: " + str(wfss_score))
-            print("Top 5 wfss_score is: " + str(wfss_score_top_5))
-            results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "top_5": idx5,"score": max_score,
-                            "optimal_frames":optimal_frames , "suboptimal_frames": suboptimal_frames,
-                            "wfss": wfss_score, "wfss_top3": wfss_score_top_3,"wfss_top5": wfss_score_top_5,
-                            "accuracy": accuracy, "accuracy_top3": accuracy_top3,  "accuracy_top5": accuracy_top5,
-                            "inference_time": running_time})
+        print('processing scan ' + scan_id)
+        if (scan_id == '0685cfaf-d585-40b3-a365-52f70f2536b6'):
+            print('stop')
+        frames_tensor = load_mha_frames(path, transform)
+        start = time.perf_counter()
+        probs = score_frames(model, frames_tensor, device)
+   #     top_5_slices, top_5_quality = get_top_slices(probs, 5)
+        scores = probs[:, 1]  # class 1 = optimal
+        idx5 = np.argpartition(scores, -5)[-5:]
+        idx5 = idx5[np.argsort(scores[idx5])[::-1]]  # sort by value desc
+        probs2 = None
+        idx_all = None
+        if model2 is not None:
+            if top_5:
+                idx_all = idx5
+            else: #apply inference of the second network on all relevant frames
+                predictions = np.argmax(probs, axis=1)
+                idx_all = np.where(predictions == 1)[0]
+            probs2 = score_frames(model2, frames_tensor[idx_all], device)
+            best_idx, idx3, idx5, max_score = calc_top_1_5(idx_all, probs2, scores, threshold)
+        else:
+            idx3 = np.argpartition(scores, -3)[-3:]
+            idx3 = idx3[np.argsort(scores[idx3])[::-1]]
+            max_score = np.max(scores)
+            best_idx = int(np.argmax(scores))
 
-        except Exception as e:
-            print(f"Error processing {scan_id}: {e}")
+        end = time.perf_counter()
+        running_time = end-start
+        print(f"running time is: {running_time}")
+        optimal_frames, suboptimal_frames = get_optimal_suboptimal(scan_id, labels_df)
+        (gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt,
+         f1_opt_subopt) = calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, probs2, idx_all, rel_only=rel_only)
+        for t, p in zip(gt, predictions):
+            cm_total[t, p] += 1
+        precision_recall_res.append({"scan": scan_id + ".mha", "precision_opt_only": precision_opt_only,
+                                     "recall_opt_only": recall_opt_only, "F1_opt_only": f1_opt_only,
+                                     "precision_opt_subopt": precision_opt_subopt, "recall_opt_subopt": recall_opt_subopt,
+                                     "F1_opt_subopt": f1_opt_subopt,"num_total": len(probs[:,0]),
+                                     "num_opt": len(optimal_frames), "num_subopt": len(suboptimal_frames)})
+        wfss_score, accuracy = calc_scan_wfss_accuracy(scan_id, best_idx, labels_df)
+        wfss_score_top_3, accuracy_top3 = calc_top_k_scan_wfss_accuracy(scan_id, idx3, labels_df)
+        wfss_score_top_5, accuracy_top5 = calc_top_k_scan_wfss_accuracy(scan_id, idx5, labels_df)
+        print("wfss_score is: " + str(wfss_score))
+        print("Top 5 wfss_score is: " + str(wfss_score_top_5))
+        results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "top_5": idx5,"score": max_score,
+                        "optimal_frames":optimal_frames , "suboptimal_frames": suboptimal_frames,
+                        "wfss": wfss_score, "wfss_top3": wfss_score_top_3,"wfss_top5": wfss_score_top_5,
+                        "accuracy": accuracy, "accuracy_top3": accuracy_top3,  "accuracy_top5": accuracy_top5,
+                        "inference_time": running_time})
+
+
+
     #create a dataframe from the total confusion matrix
     class_names = ["irrelevant", "optimal", "suboptimal"]
     cm_df = pd.DataFrame(cm_total, index=class_names, columns=class_names)
@@ -222,6 +246,8 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0.0, help="threshold for the second network")
     parser.add_argument("--top5", type=str2bool, default='true', help="should use top 5 for the second"
                                                                        " network if applicable")
+    parser.add_argument("--rel_only", type=str2bool, default='false', help="should only relevant cases be calculated")
+
 
 
     args = parser.parse_args()
@@ -278,7 +304,7 @@ if __name__ == "__main__":
     if os.path.exists(out_dir) is False:
         os.mkdir(out_dir)
     df_results, df_precision_recall_res, df_cm = process_scans(args.scan_dir, model, model2, transform, val_scan_names, labels_df, device=device,
-                               threshold = args.threshold, top_5=args.top5)
+                               threshold = args.threshold, top_5=args.top5, rel_only = args.rel_only)
     with pd.ExcelWriter(args.output, engine="openpyxl") as writer:
         df_results.to_excel(writer, sheet_name="top1-5", index=False)
         df_precision_recall_res.to_excel(writer, sheet_name="precision_recall", index=False)

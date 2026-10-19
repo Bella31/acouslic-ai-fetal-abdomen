@@ -1,8 +1,8 @@
 import pandas as pd
 
 if __name__ == "__main__":
-    input_csv = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/labels.csv'
-    save_path = '/home/bella/Academy/results/data_stats.csv'
+    input_csv = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/labels_balanced_opt_using_subopt.csv'
+    save_path = '/home/bella/Academy/results/data_stats_total_balanced.csv'
 
     df = pd.read_csv(input_csv)
 

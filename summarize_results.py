@@ -3,20 +3,97 @@ import os
 import pandas as pd
 from openpyxl.styles import Font
 
-def calc_total(top1_5_avg_df, pr_avg_df, conf_df, top1_5_avg_df_subopt, pr_avg_df_subopt):
+from part1_frame_classification.scripts.evaluate_frame_selection import calc_precision_recall_from_conf_df
+
+import pandas as pd
+
+# def merge_conf_matrix(conf: pd.DataFrame, merge_classes=("irrelevant", "suboptimal"),
+#                                new_class="non_optimal") -> pd.DataFrame:
+#     """
+#     Merge a 3-class confusion matrix into 2 classes by unifying `merge_classes`
+#     into `new_class`.
+#     Returns a new confusion matrix as a DataFrame.
+#     """
+#
+#
+#     return out
+
+import pandas as pd
+
+
+def merge_conf_matrix(conf):
+    """
+    Merge 3-class confusion matrix to two class based on merge_classes
+    """
+    cm_opt_only = None
+    cm_rel = None
+    try:
+        cm_opt_only = pd.DataFrame(
+            data=[[0, 0],
+                  [0, 0]],
+            index=["not-optimal", "optimal"],  # True labels (rows)
+            columns=["not-optimal", "optimal"]  # Predicted labels (columns)
+        )
+        cm_opt_only.loc['not-optimal','not-optimal'] = (conf.loc['irrelevant']['irrelevant'] +
+                                                       conf.loc['irrelevant']['suboptimal'] +
+                                                       conf.loc['suboptimal']['irrelevant'] +
+                                                       conf.loc['suboptimal']['suboptimal'])
+        cm_opt_only.loc['not-optimal','optimal'] = conf.loc['irrelevant']['optimal'] + conf.loc['suboptimal']['optimal']
+        cm_opt_only.loc['optimal','not-optimal'] = conf.loc['optimal']['irrelevant'] + conf.loc['optimal']['suboptimal']
+        cm_opt_only.loc['optimal','optimal'] = conf.loc['optimal']['optimal']
+
+        cm_rel = pd.DataFrame(
+            data=[[0, 0],
+                  [0, 0]],
+            index=["irrelevant", "relevant"],  # True labels (rows)
+            columns=["irrelevant", "relevant"]  # Predicted labels (columns)
+        )
+        cm_rel.loc['relevant', 'relevant'] = (conf.loc['optimal']['optimal'] +
+                                              conf.loc['optimal']['suboptimal'] +
+                                              conf.loc['suboptimal']['optimal'] +
+                                              conf.loc['suboptimal']['suboptimal'])
+        cm_rel.loc['relevant', 'irrelevant'] = conf.loc['optimal']['irrelevant'] + conf.loc['suboptimal']['irrelevant']
+        cm_rel.loc['irrelevant', 'relevant'] = conf.loc['irrelevant']['optimal'] + conf.loc['irrelevant']['suboptimal']
+        cm_rel.loc['irrelevant', 'irrelevant'] = conf.loc['irrelevant']['irrelevant']
+    except:
+        print('confusion matrices were not merged properly')
+    return cm_opt_only, cm_rel
+
+def calc_total(top1_5_avg_df, conf_df, top1_5_avg_df_subopt, pr_avg_subopt):
     """
     Calculate averages for all metrics except confusion matrix for the optimal data
     """
     top1_5_total_df = top1_5_avg_df.groupby("name", as_index=False).mean()
-    pr_total_df = pr_avg_df.groupby("name", as_index=False).mean()
     top1_5_total_df_subopt = top1_5_avg_df_subopt.groupby("name", as_index=False).mean()
-    pr_total_df_subopt = pr_avg_df_subopt.groupby("name", as_index=False).mean()
+    pr_total_subopt = pr_avg_subopt.groupby("name", as_index=False).mean()
 
     conf_total_dfs = {}
-    for alg_dfs in conf_df:
-        conf_total_dfs[alg_dfs]  = pd.concat(conf_df[alg_dfs].values()).groupby(level=0).sum()
+    pr_total = {}
 
-    return top1_5_total_df, pr_total_df, conf_total_dfs, top1_5_total_df_subopt, pr_total_df_subopt
+    for alg_dfs in conf_df:
+        dfs = []
+        for df in conf_df[alg_dfs].values():
+            d = df.copy()
+            if "True" in d.columns:
+                d = d.set_index("True")
+            d = d.apply(pd.to_numeric, errors="coerce").fillna(0)
+            dfs.append(d)
+        cm_sum = pd.concat(dfs, axis=0)
+        conf_total_dfs[alg_dfs] = cm_sum.groupby(level=0).sum()
+
+        conf_matrix_opt_only, conf_matrix_opt_subopt = merge_conf_matrix(conf_total_dfs[alg_dfs])
+        precision_opt_only, recall_opt_only, f1_opt_only = calc_precision_recall_from_conf_df(conf_matrix_opt_only)
+        precision_opt_subopt, recall_opt_subopt, f1_opt_subopt = calc_precision_recall_from_conf_df(conf_matrix_opt_subopt)
+        pr = {}
+        pr['precision_opt_only']=precision_opt_only
+        pr['recall_opt_only']=recall_opt_only
+        pr['f1_opt_only'] = f1_opt_only
+        pr['precision_opt_subopt']=precision_opt_subopt
+        pr['recall_opt_subopt'] = recall_opt_subopt
+        pr['f1_opt_subopt'] = f1_opt_subopt
+        pr_total[alg_dfs] = pr
+
+    return top1_5_total_df, pr_total, conf_total_dfs, top1_5_total_df_subopt, pr_total_subopt
 
 def write_dfs_to_sheet(
     writer: pd.ExcelWriter,
@@ -82,38 +159,67 @@ if __name__ == "__main__":
     pr_column_names_subopt = ['precision_opt_subopt', 'recall_opt_subopt', 'F1_opt_subopt']
     conf_column_names = ['irrelevant', 'optimal',	'suboptimal']
     conf_column_names_subopt = ['irrelevant', 'suboptimal']
-    # results_info = {170: [0, 'opt only\wo mixup densenet'],
-    #                 171: [1, 'opt only\wo mixup densenet'],
-    #                 172: [2, 'opt only\wo mixup densenet'],
-    #                 173: [3, 'opt only\wo mixup densenet'],
-    #                 174: [4, 'opt only\wo mixup densenet'],
-    #                 206: [0, 'Three classes Densenet \wo mixup '],
-    #                 207: [1, 'Three classes Densenet \wo mixup '],
-    #                 208: [2, 'Three classes Densenet \wo mixup '],
-    #                 209: [3, 'Three classes Densenet \wo mixup '],
-    #                 210: [4, 'Three classes Densenet \wo mixup '],
-    #                 196: [0, 'One-step Densenet \wo mixup'],
-    #                 197: [1, 'One-step Densenet \wo mixup'],
-    #                 198: [2, 'One-step Densenet \wo mixup'],
-    #                 199: [3, 'One-step Densenet \wo mixup'],
-    #                 200: [4, 'One-step Densenet \wo mixup'],
-    #                 201: [0, 'two-step Densenet \wo mixup'],
-    #                 202: [1, 'two-step Densenet \wo mixup'],
-    #                 203: [2, 'two-step Densenet \wo mixup'],
-    #                 204: [3, 'two-step Densenet \wo mixup'],
-    #                 205: [4, 'two-step Densenet \wo mixup'],
-    #                 }
     results_info = {
-                    201: [0, 'two-step Densenet \wo mixup'],
-                    202: [1, 'two-step Densenet \wo mixup'],
-                    203: [2, 'two-step Densenet \wo mixup'],
-                    204: [3, 'two-step Densenet \wo mixup'],
-                    205: [4, 'two-step Densenet \wo mixup'],
-                    '201_all_rel': [0, 'two-step Densenet \wo mixup all rel'],
-                    '202_all_rel': [1, 'two-step Densenet \wo mixup all rel'],
-                    '203_all_rel': [2, 'two-step Densenet \wo mixup all rel'],
-                    '204_all_rel': [3, 'two-step Densenet \wo mixup all rel'],
-                    '205_all_rel': [4, 'two-step Densenet \wo mixup all rel'],
+                    101: [0, 'Opt-only Resnet'],
+                    102: [1, 'Opt-only Resnet'],
+                    103: [2, 'Opt-only Resnet'],
+                    104: [3, 'Opt-only Resnet'],
+                    105: [4, 'Opt-only Resnet'],
+                    165: [0, 'Opt-only Efficientnet'],
+                    166: [1, 'Opt-only Efficientnet'],
+                    167: [2, 'Opt-only Efficientnet'],
+                    168: [3, 'Opt-only Efficientnet'],
+                    169: [4, 'Opt-only Efficientnet'],
+                    155: [0, 'Opt-only Convnext'],
+                    156: [1, 'Opt-only Convnext'],
+                    157: [2, 'Opt-only Convnext'],
+                    158: [3, 'Opt-only Convnext'],
+                    159: [4, 'Opt-only Convnext'],
+                    170: [0, 'Opt-only Densenet'],
+                    171: [1, 'Opt-only Densenet'],
+                    172: [2, 'Opt-only Densenet'],
+                    173: [3, 'Opt-only Densenet'],
+                    174: [4, 'Opt-only Densenet'],
+                    226: [0, 'One-step Resnet'],
+                    227: [1, 'One-step Resnet'],
+                    228: [2, 'One-step Resnet'],
+                    229: [3, 'One-step Resnet'],
+                    230: [4, 'One-step Resnet'],
+                    236: [0, 'One-step Efficientnet'],
+                    237: [1, 'One-step Efficientnet'],
+                    238: [2, 'One-step Efficientnet'],
+                    239: [3, 'One-step Efficientnet'],
+                    240: [4, 'One-step Efficientnet'],
+                    131: [0, 'One-step Convnext'],
+                    132: [1, 'One-step Convnext'],
+                    133: [2, 'One-step Convnext'],
+                    134: [3, 'One-step Convnext'],
+                    135: [4, 'One-step Convnext'],
+                    196: [0, 'One-step Densenet'],
+                    197: [1, 'One-step Densenet'],
+                    198: [2, 'One-step Densenet'],
+                    199: [3, 'One-step Densenet'],
+                    200: [4, 'One-step Densenet'],
+                    231: [0, 'two-step Resnet'],
+                    232: [1, 'two-step Resnet'],
+                    233: [2, 'two-step Resnet'],
+                    234: [3, 'two-step Resnet'],
+                    235: [4, 'two-step Resnet'],
+                    241: [0, 'two-step Efficientnet'],
+                    242: [1, 'two-step Efficientnet'],
+                    243: [2, 'two-step Efficientnet'],
+                    244: [3, 'two-step Efficientnet'],
+                    245: [4, 'two-step Efficientnet'],
+                    160: [0, 'two-step Convnext'],
+                    161: [1, 'two-step Convnext'],
+                    162: [2, 'two-step Convnext'],
+                    163: [3, 'two-step Convnext'],
+                    164: [4, 'two-step Convnext'],
+                    201: [0, 'two-step (ours)'],
+                    202: [1, 'two-step (ours)'],
+                    203: [2, 'two-step (ours)'],
+                    204: [3, 'two-step (ours)'],
+                    205: [4, 't wo-step (ours)'],
                     }
     top1_5_avg_df = None
     pr_avg_df = None
@@ -143,9 +249,7 @@ if __name__ == "__main__":
         excel_path = os.path.join(networks_path, str(network_id), 'results', f"predictions_{network_id}{postfix}.xlsx")
         dfs = pd.read_excel(excel_path,sheet_name=sheets_names)
         top_avg = dfs["top1-5"][top_column_names].mean()
-        pr_avg = dfs["precision_recall"][pr_column_names].mean()
         top1_5_avg_df.loc[results_info[run_id][1] + '_' + str(results_info[run_id][0])] = run_series.combine_first(top_avg)
-        pr_avg_df.loc[results_info[run_id][1] +  '_' + str(results_info[run_id][0])] = run_series.combine_first(pr_avg)
         if results_info[run_id][1] not in conf_dfs:
             conf_dfs[results_info[run_id][1]] = {}
         conf_dfs[results_info[run_id][1]][results_info[run_id][0]] = dfs["conf_matrix"]
@@ -156,23 +260,27 @@ if __name__ == "__main__":
         pr_avg_subopt = dfs["precision_recall"][pr_column_names_subopt].mean()
         top1_5_avg_df_subopt.loc[results_info[run_id][1] +  '_' + str(results_info[run_id][0])] = run_series.combine_first(top_avg_subopt)
         pr_avg_df_subopt.loc[results_info[run_id][1] +  '_' + str(results_info[run_id][0])] = run_series.combine_first(pr_avg_subopt)
-    #save all results
+
     with (pd.ExcelWriter(results_path, engine="openpyxl") as writer):
-        top1_5_total_df, pr_total_df, conf_total_dfs, top1_5_total_df_subopt, pr_total_df_subopt =\
-            calc_total(top1_5_avg_df, pr_avg_df, conf_dfs, top1_5_avg_df_subopt, pr_avg_df_subopt)
+        top1_5_total_df, pr_total, conf_total_dfs, top1_5_total_df_subopt, pr_total_subopt =\
+            calc_total(top1_5_avg_df, conf_dfs, top1_5_avg_df_subopt, pr_avg_df_subopt)
+        try:
+            #write total calculations
+            top1_5_total_df.to_excel(writer, sheet_name="top1_5", index=False)
+            pr_total_df = pd.DataFrame(pr_total).T
+            pr_total_df.to_excel(writer, sheet_name="pr", index=True)
+            top1_5_total_df_subopt.to_excel(writer, sheet_name="top1_5_subopt", index=False)
+            pr_total_subopt.to_excel(writer, sheet_name="pr_subopt", index=True)
+            write_dfs_to_sheet(writer, conf_total_dfs, "conf")
 
-        #write total calculations
-        top1_5_total_df.to_excel(writer, sheet_name="top1_5", index=False)
-        pr_total_df.to_excel(writer, sheet_name="pr", index=False)
-        top1_5_total_df_subopt.to_excel(writer, sheet_name="top1_5_subopt", index=False)
-        pr_total_df_subopt.to_excel(writer, sheet_name="pr_subopt", index=False)
-        write_dfs_to_sheet(writer, conf_total_dfs, "conf")
+            #write original data
+            top1_5_avg_df.to_excel(writer, sheet_name="top1_5_folds", index=False)
+      #      pr_avg_df.to_excel(writer, sheet_name="pr_folds", index=False)
+            top1_5_avg_df_subopt.to_excel(writer, sheet_name="top_folds_subopt", index=False)
 
-        #write original data
-        top1_5_avg_df.to_excel(writer, sheet_name="top1_5_folds", index=False)
-        pr_avg_df.to_excel(writer, sheet_name="pr_folds", index=False)
-        top1_5_avg_df_subopt.to_excel(writer, sheet_name="top_folds_subopt", index=False)
-        pr_avg_df_subopt.to_excel(writer, sheet_name="pr_folds_subopt", index=False)
+        except Exception as e:
+            print("calc_total failed:", e)
+            raise
 
 
 
