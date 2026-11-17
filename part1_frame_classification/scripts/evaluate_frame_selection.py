@@ -1,6 +1,8 @@
 import json
 import os
 import glob
+import shutil
+import sys
 import time
 import numpy as np
 import pandas as pd
@@ -17,6 +19,45 @@ from part1_frame_classification.scripts.calculate_wfss import  \
     calc_scan_wfss_accuracy, calc_top_k_scan_wfss_accuracy
 from sklearn.metrics import confusion_matrix
 from openpyxl import Workbook
+
+
+DEFAULT_SHORTLIST_SIZE = 5
+DEFAULT_TOPK_LIST = (3, 5)
+
+
+def prepare_labels(labels_df):
+    """
+    Sort the labels by scan and frame number and check they can be indexed by frame.
+    get_frame_labels takes the labels in row order and the frame index is used to look into that list, so
+    rows that are out of order or duplicated silently shift every label of the scan.
+    """
+    required = {'Filename', 'Frame', 'Label'}
+    missing = required - set(labels_df.columns)
+    if missing:
+        raise ValueError(f"labels file is missing the columns {sorted(missing)}. The frame level labels file "
+                         f"with all frames is needed here, not a balanced or summarized one.")
+    duplicated = labels_df.duplicated(subset=['Filename', 'Frame'])
+    if duplicated.any():
+        examples = labels_df.loc[duplicated, ['Filename', 'Frame']].head(5).values.tolist()
+        raise ValueError(f"labels file holds {int(duplicated.sum())} duplicated (Filename, Frame) rows, "
+                         f"for example {examples}")
+    return labels_df.sort_values(['Filename', 'Frame']).reset_index(drop=True)
+
+
+def validate_scan_labels(scan_id, labels_df, num_frames):
+    """
+    Check that the scan has one label per frame, numbered 0 to num_frames-1
+    """
+    frames = np.asarray(labels_df.loc[labels_df['Filename'] == scan_id + ".mha", 'Frame'].values)
+    if len(frames) == 0:
+        raise ValueError(f"scan {scan_id} has no rows in the labels file")
+    if len(frames) != num_frames:
+        raise ValueError(f"scan {scan_id} has {num_frames} frames but {len(frames)} label rows. The frame "
+                         f"level labels file with all frames is needed here.")
+    expected = np.arange(num_frames)
+    if not np.array_equal(frames, expected):
+        raise ValueError(f"scan {scan_id} labels do not cover frames 0..{num_frames - 1} exactly, "
+                         f"they run from {frames.min()} to {frames.max()}")
 
 
 def get_optimal_suboptimal(scan_id, labels_df):
@@ -100,44 +141,74 @@ def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr
     return gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt, f1_opt_subopt
 
 
+def get_top_k_indices(scores, k):
+    """
+    Indices of the k highest scores, sorted from the best score down.
+    k is clipped to the number of available frames.
+    """
+    k = int(min(k, len(scores)))
+    idx = np.argpartition(scores, -k)[-k:]
+    return idx[np.argsort(scores[idx])[::-1]]
+
+
 def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df, threshold=0.0, device=None,
-                  top_5 = True, rel_only = False):
+                  top_5 = True, rel_only = False, shortlist_size = DEFAULT_SHORTLIST_SIZE,
+                  topk_list = DEFAULT_TOPK_LIST):
     """
     Apply inference and perform all evaluations
     Output 3 dataframes: one for top slices selection, ont with precision and recall and a total confusion matrix
+
+    shortlist_size is the number of candidate frames the first network hands to the second one when top_5 is
+    True. topk_list are the additional top-k frame selections to score besides the single best frame, which is
+    always reported in the "wfss" and "accuracy" columns. A k larger than the shortlist cannot be selected, so
+    its columns are left empty.
     """
     results = []
     precision_recall_res = []
     cm_total = np.zeros((3, 3), dtype=np.int64)
+    shortlist_size = int(shortlist_size)
+    topk_list = [int(k) for k in topk_list]
+    #a shortlist of n frames cannot produce a top-k selection for k above n
+    if top_5 and model2 is not None:
+        skipped_ks = [k for k in topk_list if k > shortlist_size]
+        if skipped_ks:
+            print(f"shortlist size is {shortlist_size}, top {skipped_ks} will be left empty")
     all_scan_paths = sorted(glob.glob(os.path.join(scan_dir, "*.mha")))
+    #a test scan with no .mha in scan_dir would otherwise be dropped without a word, leaving the fold
+    #evaluated on fewer scans than it should be
+    val_scan_names = set(str(name).replace('.mha', '') for name in val_scan_names)
+    found_scan_names = set(os.path.basename(p).replace('.mha', '') for p in all_scan_paths)
+    absent = sorted(val_scan_names - found_scan_names)
+    if absent:
+        raise FileNotFoundError(f"{len(absent)} of the {len(val_scan_names)} test scans are not in "
+                                f"{scan_dir}, for example {absent[:5]}")
+    processed_scan_names = set()
     for path in tqdm(all_scan_paths, desc="Processing validation scans"):
         scan_id = os.path.basename(path).replace('.mha', '')
         if scan_id not in val_scan_names:
             continue
 
         print('processing scan ' + scan_id)
-        if (scan_id == '0685cfaf-d585-40b3-a365-52f70f2536b6'):
-            print('stop')
         frames_tensor = load_mha_frames(path, transform)
+        validate_scan_labels(scan_id, labels_df, len(frames_tensor))
+        processed_scan_names.add(scan_id)
         start = time.perf_counter()
         probs = score_frames(model, frames_tensor, device)
-   #     top_5_slices, top_5_quality = get_top_slices(probs, 5)
         scores = probs[:, 1]  # class 1 = optimal
-        idx5 = np.argpartition(scores, -5)[-5:]
-        idx5 = idx5[np.argsort(scores[idx5])[::-1]]  # sort by value desc
+        shortlist = get_top_k_indices(scores, shortlist_size)
         probs2 = None
         idx_all = None
         if model2 is not None:
             if top_5:
-                idx_all = idx5
+                idx_all = shortlist
             else: #apply inference of the second network on all relevant frames
                 predictions = np.argmax(probs, axis=1)
                 idx_all = np.where(predictions == 1)[0]
             probs2 = score_frames(model2, frames_tensor[idx_all], device)
-            best_idx, idx3, idx5, max_score = calc_top_1_5(idx_all, probs2, scores, threshold)
+            best_idx, topk_indices, max_score = calc_topk_indices(idx_all, probs2, scores, threshold,
+                                                                  [k for k in topk_list if k <= len(idx_all)])
         else:
-            idx3 = np.argpartition(scores, -3)[-3:]
-            idx3 = idx3[np.argsort(scores[idx3])[::-1]]
+            topk_indices = {k: get_top_k_indices(scores, k) for k in topk_list}
             max_score = np.max(scores)
             best_idx = int(np.argmax(scores))
 
@@ -155,17 +226,39 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
                                      "F1_opt_subopt": f1_opt_subopt,"num_total": len(probs[:,0]),
                                      "num_opt": len(optimal_frames), "num_subopt": len(suboptimal_frames)})
         wfss_score, accuracy = calc_scan_wfss_accuracy(scan_id, best_idx, labels_df)
-        wfss_score_top_3, accuracy_top3 = calc_top_k_scan_wfss_accuracy(scan_id, idx3, labels_df)
-        wfss_score_top_5, accuracy_top5 = calc_top_k_scan_wfss_accuracy(scan_id, idx5, labels_df)
         print("wfss_score is: " + str(wfss_score))
-        print("Top 5 wfss_score is: " + str(wfss_score_top_5))
-        results.append({"scan": scan_id + ".mha", "best_frame": best_idx, "top_5": idx5,"score": max_score,
-                        "optimal_frames":optimal_frames , "suboptimal_frames": suboptimal_frames,
-                        "wfss": wfss_score, "wfss_top3": wfss_score_top_3,"wfss_top5": wfss_score_top_5,
-                        "accuracy": accuracy, "accuracy_top3": accuracy_top3,  "accuracy_top5": accuracy_top5,
-                        "inference_time": running_time})
+        #the largest selection that the shortlist could actually serve, so this is filled for every
+        #shortlist size rather than only for the largest requested k
+        available_ks = sorted(topk_indices)
+        scan_result = {"scan": scan_id + ".mha", "best_frame": best_idx,
+                       "shortlist_size": shortlist_size if (top_5 and model2 is not None) else len(probs[:, 0]),
+                       "top_frames": list(topk_indices[available_ks[-1]]) if available_ks else None,
+                       "score": max_score,
+                       "optimal_frames": optimal_frames, "suboptimal_frames": suboptimal_frames,
+                       "wfss": wfss_score, "accuracy": accuracy}
+        #score every requested top-k selection, leaving a k that the shortlist cannot serve empty,
+        #and keep the ranked frames of each k so the metrics can be checked afterwards
+        for k in topk_list:
+            if k in topk_indices:
+                wfss_score_top_k, accuracy_top_k = calc_top_k_scan_wfss_accuracy(scan_id, topk_indices[k], labels_df)
+                print(f"Top {k} wfss_score is: " + str(wfss_score_top_k))
+                scan_result[f"top{k}_frames"] = list(topk_indices[k])
+            else:
+                wfss_score_top_k, accuracy_top_k = np.nan, np.nan
+                scan_result[f"top{k}_frames"] = None
+            scan_result[f"wfss_top{k}"] = wfss_score_top_k
+            scan_result[f"accuracy_top{k}"] = accuracy_top_k
+        scan_result["inference_time"] = running_time
+        results.append(scan_result)
 
 
+
+    #every test scan must have gone through, otherwise the fold is evaluated on the wrong set
+    not_processed = sorted(val_scan_names - processed_scan_names)
+    if not_processed:
+        raise RuntimeError(f"{len(not_processed)} test scans were not processed, "
+                           f"for example {not_processed[:5]}")
+    print(f"processed {len(processed_scan_names)} of {len(val_scan_names)} test scans")
 
     #create a dataframe from the total confusion matrix
     class_names = ["irrelevant", "optimal", "suboptimal"]
@@ -175,10 +268,14 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
     return pd.DataFrame(results), pd.DataFrame(precision_recall_res), cm_df
 
 
-def calc_top_1_5(idx_relevant, probs2, scores_base_network, threshold):
+def calc_topk_indices(idx_relevant, probs2, scores_base_network, threshold, topk_list):
     """"
-    Calculate top 1-5 in case of two networks
+    Re-rank the frames the first network selected using the second network and return the best frame
+    together with the top k frames for every requested k.
+    When fewer frames reached the second network than a requested k, the remaining places are filled with
+    the best remaining frames of the first network.
     """
+    idx_relevant = np.asarray(idx_relevant).ravel().astype(int)
     num_rel = len(probs2)
     scores = probs2[:, 1]  # class 1- optimal
     max_score = np.max(scores)
@@ -187,17 +284,20 @@ def calc_top_1_5(idx_relevant, probs2, scores_base_network, threshold):
         print(f"maximum score is {max_score}, which is smaller than threshold {threshold}")
         max_sub_scores = probs2[:, 0]
         best_idx2 = int(np.argmax(max_sub_scores))
-    best_idx = idx_relevant[best_idx2]
-    if num_rel>=3:
-        idx3 = idx_relevant[np.argsort(scores)[::-1]][:3]
-    else:
-        idx3 = idx_relevant[np.argsort(scores_base_network)[::-1]][:3]
-    if num_rel>=5:
-        idx5 = idx_relevant[np.argsort(scores)[::-1]][:5]
-    else:
-        idx3 = idx_relevant[np.argsort(scores_base_network)[::-1]][:5]
+    best_idx = int(idx_relevant[best_idx2])
+    ranked = idx_relevant[np.argsort(scores)[::-1]]
+    #frames of the first network, best first, used only to fill up a shortlist shorter than k
+    padding = np.argsort(scores_base_network)[::-1]
+    topk_indices = {}
+    for k in topk_list:
+        selected = ranked[:k]
+        if num_rel < k:
+            already_selected = set(selected.tolist())
+            extra = [int(i) for i in padding if int(i) not in already_selected][:k - len(selected)]
+            selected = np.concatenate([selected, np.asarray(extra, dtype=int)])
+        topk_indices[k] = selected
 
-    return best_idx, idx3, idx5, max_score
+    return best_idx, topk_indices, max_score
 
 
 def str2bool(v):
@@ -209,6 +309,19 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+def str2intlist(v):
+    """
+    Parse a comma separated list of k values, for example "3,5,10"
+    """
+    if isinstance(v, (list, tuple)):
+        return [int(k) for k in v]
+    values = [int(part) for part in str(v).replace(' ', '').split(',') if part != '']
+    if not values:
+        raise argparse.ArgumentTypeError('At least one k value is expected.')
+    if min(values) < 1:
+        raise argparse.ArgumentTypeError('k values must be positive.')
+    return sorted(set(values))
 
 def get_model(model_name, args):
     """
@@ -244,15 +357,40 @@ if __name__ == "__main__":
     parser.add_argument("--use_gpu", type=str2bool, default='true', help="use GPU if there is anought GPU memory")
     parser.add_argument("--num_classes", type=int, default=3, help="number of classes")
     parser.add_argument("--threshold", type=float, default=0.0, help="threshold for the second network")
-    parser.add_argument("--top5", type=str2bool, default='true', help="should use top 5 for the second"
-                                                                       " network if applicable")
+    parser.add_argument("--top5", type=str2bool, default='true', help="should use a candidate shortlist for the"
+                                                                       " second network if applicable")
+    parser.add_argument("--shortlist_size", type=int, default=DEFAULT_SHORTLIST_SIZE,
+                        help="number of candidate frames passed from the first to the second network when"
+                             " --top5 is true")
+    parser.add_argument("--topk_list", type=str2intlist, default=','.join(str(k) for k in DEFAULT_TOPK_LIST),
+                        help="comma separated top-k selections to score besides the single best frame,"
+                             " for example 3,5,10")
     parser.add_argument("--rel_only", type=str2bool, default='false', help="should only relevant cases be calculated")
+    parser.add_argument("--overwrite", type=str2bool, default='false',
+                        help="overwrite an existing output file, moving the old one to previous_versions."
+                             " When false an existing output file is kept and the evaluation is skipped")
 
 
 
     args = parser.parse_args()
 
-    labels_df = pd.read_csv(args.labels_path)
+    if args.shortlist_size < 1:
+        parser.error("--shortlist_size must be at least 1")
+
+    #decided before inference runs, so a skip costs nothing
+    if os.path.exists(args.output):
+        if not args.overwrite:
+            print(f"⏭  {args.output} already exists, skipping. Pass --overwrite true to replace it.")
+            sys.exit(0)
+        archive_dir = os.path.join(os.path.dirname(args.output), 'previous_versions')
+        os.makedirs(archive_dir, exist_ok=True)
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        base, ext = os.path.splitext(os.path.basename(args.output))
+        archived = os.path.join(archive_dir, f'{base}_{stamp}{ext}')
+        shutil.move(args.output, archived)
+        print(f"moved the previous results to {archived}")
+
+    labels_df = prepare_labels(pd.read_csv(args.labels_path))
     # Load model
     device = torch.device("cpu")
     if args.use_gpu:
@@ -302,9 +440,10 @@ if __name__ == "__main__":
     # Process
     out_dir = os.path.dirname(args.output)
     if os.path.exists(out_dir) is False:
-        os.mkdir(out_dir)
+        os.makedirs(out_dir, exist_ok=True)
     df_results, df_precision_recall_res, df_cm = process_scans(args.scan_dir, model, model2, transform, val_scan_names, labels_df, device=device,
-                               threshold = args.threshold, top_5=args.top5, rel_only = args.rel_only)
+                               threshold = args.threshold, top_5=args.top5, rel_only = args.rel_only,
+                               shortlist_size = args.shortlist_size, topk_list = args.topk_list)
     with pd.ExcelWriter(args.output, engine="openpyxl") as writer:
         df_results.to_excel(writer, sheet_name="top1-5", index=False)
         df_precision_recall_res.to_excel(writer, sheet_name="precision_recall", index=False)
