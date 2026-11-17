@@ -219,7 +219,7 @@ if __name__ == "__main__":
                     202: [1, 'two-step (ours)'],
                     203: [2, 'two-step (ours)'],
                     204: [3, 'two-step (ours)'],
-                    205: [4, 't wo-step (ours)'],
+                    205: [4, 'two-step (ours)'],
                     }
     top1_5_avg_df = None
     pr_avg_df = None
