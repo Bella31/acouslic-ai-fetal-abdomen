@@ -24,13 +24,22 @@ run folder is which network:
 | network | trained as | used by |
 |---|---|---|
 | `relnet` | relevant vs irrelevant | One-step; stage 1 of Two-step |
-| `optnet` | optimal vs suboptimal, relevant frames only (`pos_only`) | stage 2 of Two-step |
+| `optnet` | optimal vs suboptimal (`pos_only`); see below for the irrelevant frames | stage 2 of Two-step |
 | `optonly` | optimal vs everything else (`opt_only`), `opt_no_subopt` family | Opt-only |
 | `threeclass` | irrelevant / optimal / suboptimal | Three-class |
 
-- `train_subject_disjoint.sh` writes this table as it trains (`subject_disjoint_manifest.csv` in the network folder).
+- `train_subject_disjoint.py` writes this table as it trains (`subject_disjoint_manifest.csv` in the network folder).
 - `published_networks.csv` in this folder lists the runs behind the submitted manuscript, so the
   same scripts also reproduce the published numbers.
+
+**OptNet and the irrelevant frames.** The frame folders hold irrelevant, optimal and suboptimal
+frames. OptNet (`pos_only`) is trained on optimal (1) vs not optimal (0), where class 0 is the
+suboptimal and the irrelevant frames together: the shortlist it re-ranks at inference can contain
+irrelevant frames, and they must rank as not optimal. The published OptNet runs were trained this
+way and the retraining keeps it. `--exclude_irrelevant true` (not used) would drop them. Each run saves its
+choice in `config.json` (a missing entry means the published behaviour) and the images it was
+trained on in `class_counts.csv`. The checks sheet says which OptNet a table holds, and one table
+may not mix the two.
 
 **Data:** the full `.mha` scans (`--scan_dir`), the frame-level labels CSV with every frame
 (`--labels_path`), and the list of the 113 Suboptimal-only scans (`--subopt_list`). The defaults
@@ -42,10 +51,30 @@ are the paths on the GPU machine.
 - within a fold, all methods share the same test set, so the comparisons are paired
 - the five test sets are disjoint
 - no network was trained or validated on a Suboptimal-only scan
-- with `--subject_csv`, any subject shared between a network's training data and the scans it is evaluated on is reported
+- subjects (`--subject_csv`, required): no subject may be shared between a network's training or
+  validation scans and the scans it is evaluated on, or between its training and validation scans,
+  and every scan needs a subject_id. Any of these stops the run. The published networks were split
+  per scan and do share subjects; reproduce them with `--allow_subject_overlap`
+  (`ALLOW_SUBJECT_OVERLAP=1` for the shell script), which lists the overlap in the checks sheet instead
 
-When a check fails, nothing runs. When predictions are missing, or a fold covers the wrong scans,
-no tables are written. `--allow_incomplete` writes them anyway, named `*_INCOMPLETE.xlsx`.
+When a check fails, nothing runs. When predictions are missing, a fold covers the wrong scans, or a
+metric is missing for some scans of a fold (so its mean would use fewer scans than the other
+methods), no tables are written. `--allow_incomplete` writes them anyway, named `*_INCOMPLETE.xlsx`.
+
+## Rules for edge cases
+
+- **Two-step (relevant)** gives OptNet every frame RelNet calls relevant. When fewer than k frames
+  are relevant, the top-k list is completed with RelNet's best remaining frames. When no frame is
+  relevant, OptNet gets RelNet's single best frame, so the scan still has a selection, and the
+  frame-level predictions stay RelNet's. The per-scan columns `second_stage_candidates` and
+  `no_relevant_frame` show where this happened. (In the published runs every scan had at least five
+  relevant frames, so neither rule changes a published number.)
+- **F1** of a scan with target frames but no true positive is 0, not undefined. Prediction files
+  written before this fix leave it empty, and a mean that skips those scans is too high. The
+  frame-level script therefore recomputes the per-scan F1 from precision and recall, for old and
+  new files alike. For the published DenseNet networks the Suboptimal-only F1 becomes 0.434
+  (Opt-only, 44 scan-fold values affected), 0.481 (One-step and Two-step (relevant), 3 each); the
+  pooled Optimal-included values do not change.
 
 ## Where results go
 
@@ -77,6 +106,10 @@ From the repository root:
 ```bash
 # everything, for the subject-disjoint networks
 nohup ./part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.sh > eval.log 2>&1 &
+
+# the published networks (their splits share subjects, so the overlap is reported, not blocking)
+NETWORKS=part1_frame_classification/scripts/paper_evaluation/published_networks.csv ALLOW_SUBJECT_OVERLAP=1 \
+    ./part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.sh
 
 # one section
 python -m part1_frame_classification.scripts.paper_evaluation.evaluate_shortlist_size \

@@ -80,31 +80,37 @@ def read_test_scans(val_scans_path):
         scans_set.add(name)
     return scans_set
 
+def precision_recall_f1(TP, FP, FN):
+    """
+    Precision, recall and F1 from counts.
+    Precision (recall) is 0 when nothing is predicted positive (there is no positive frame).
+    F1 is 0 when there are positive or predicted frames but no true positive: 2PR/(P+R) is 0/0 there, and
+    leaving it undefined would drop the scan from a mean of per-scan F1 and inflate it. F1 is undefined
+    (NaN) only when there is nothing to find and nothing is predicted.
+    """
+    TP, FP, FN = float(TP), float(FP), float(FN)
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    if precision + recall > 0:
+        f1 = 2 * precision * recall / (precision + recall)
+    elif TP + FP + FN > 0:
+        f1 = 0.0
+    else:
+        f1 = np.nan
+    return precision, recall, f1
+
+
 def calc_precision_recall_from_conf_df(cm):
     """
     Calculate precision, recall and F1 confusion matrix with two classes
     """
-    TP = cm.iloc[1, 1]
-    FN = cm.iloc[1, 0]
-    FP = cm.iloc[0, 1]
-    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-    f1 = 2 * (precision * recall) / (precision + recall)
-
-    return  precision, recall, f1
+    return precision_recall_f1(TP=cm.iloc[1, 1], FP=cm.iloc[0, 1], FN=cm.iloc[1, 0])
 
 def calc_precision_recall_from_conf(cm):
     """
     Calculate precision, recall and F1 confusion matrix with two classes
     """
-    TP = cm[1, 1]
-    FN = cm[1, 0]
-    FP = cm[0, 1]
-    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-    f1 = 2 * (precision * recall) / (precision + recall)
-
-    return  precision, recall, f1
+    return precision_recall_f1(TP=cm[1, 1], FP=cm[0, 1], FN=cm[1, 0])
 
 
 def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, probs2 = None, idx_rel = None, rel_only=False):
@@ -116,7 +122,7 @@ def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr
     gt = np.zeros_like(predictions)
     gt[optimal_frames] = 1
     gt[suboptimal_frames] = 2
-    if probs2 is not None:
+    if probs2 is not None and len(probs2) > 0:
         predictions2 = np.argmax(probs2, axis=1)
         predictions2[predictions2==0] = 2 #the 0 here corresponds to suboptimal slice with value of 2
         predictions[idx_rel] = predictions2
@@ -125,7 +131,7 @@ def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr
         mapping = {0: 0, 1: 1, 2: 0}
         y_true_merged = np.vectorize(mapping.get)(gt)
         y_pred_merged = np.vectorize(mapping.get)(predictions)
-        conf_matrix_opt_only = confusion_matrix(y_true_merged, y_pred_merged)
+        conf_matrix_opt_only = confusion_matrix(y_true_merged, y_pred_merged, labels=[0, 1])
         precision_opt_only, recall_opt_only, f1_opt_only = calc_precision_recall_from_conf(conf_matrix_opt_only)
     else:
         precision_opt_only = -1
@@ -135,7 +141,7 @@ def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr
     mapping = {0: 0, 1: 1, 2: 1}
     y_true_merged = np.vectorize(mapping.get)(gt)
     y_pred_merged = np.vectorize(mapping.get)(predictions)
-    conf_matrix_opt_subopt = confusion_matrix(y_true_merged, y_pred_merged)
+    conf_matrix_opt_subopt = confusion_matrix(y_true_merged, y_pred_merged, labels=[0, 1])
     precision_opt_subopt, recall_opt_subopt, f1_opt_subopt = calc_precision_recall_from_conf(conf_matrix_opt_subopt)
 
     return gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt, f1_opt_subopt
@@ -162,6 +168,14 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
     True. topk_list are the additional top-k frame selections to score besides the single best frame, which is
     always reported in the "wfss" and "accuracy" columns. A k larger than the shortlist cannot be selected, so
     its columns are left empty.
+
+    With top_5 False ("Two-step (relevant)") the second network gets every frame the first one calls relevant,
+    and the number of those varies by scan:
+      - fewer than k relevant frames: the top-k list is completed with the first network's best remaining frames
+      - no relevant frame at all: the second network gets the first network's single best frame, so the scan
+        still has a selection (the one-step one); the frame-level predictions are left as the first network's
+    so every scan has a value for every k and all methods are averaged over the same scans. The per-scan columns
+    "second_stage_candidates" and "no_relevant_frame" show where this happened.
     """
     results = []
     precision_recall_res = []
@@ -198,15 +212,24 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
         shortlist = get_top_k_indices(scores, shortlist_size)
         probs2 = None
         idx_all = None
+        no_relevant = False
+        pr_probs2, pr_idx = None, None
         if model2 is not None:
             if top_5:
                 idx_all = shortlist
+                ks = [k for k in topk_list if k <= len(idx_all)]
             else: #apply inference of the second network on all relevant frames
                 predictions = np.argmax(probs, axis=1)
                 idx_all = np.where(predictions == 1)[0]
+                no_relevant = len(idx_all) == 0
+                if no_relevant:
+                    print("no frame classified as relevant, the second network gets the first network's best frame")
+                    idx_all = shortlist[:1]
+                ks = list(topk_list)
             probs2 = score_frames(model2, frames_tensor[idx_all], device)
-            best_idx, topk_indices, max_score = calc_topk_indices(idx_all, probs2, scores, threshold,
-                                                                  [k for k in topk_list if k <= len(idx_all)])
+            best_idx, topk_indices, max_score = calc_topk_indices(idx_all, probs2, scores, threshold, ks)
+            if not no_relevant:
+                pr_probs2, pr_idx = probs2, idx_all
         else:
             topk_indices = {k: get_top_k_indices(scores, k) for k in topk_list}
             max_score = np.max(scores)
@@ -217,7 +240,8 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
         print(f"running time is: {running_time}")
         optimal_frames, suboptimal_frames = get_optimal_suboptimal(scan_id, labels_df)
         (gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt,
-         f1_opt_subopt) = calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, probs2, idx_all, rel_only=rel_only)
+         f1_opt_subopt) = calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr_probs2, pr_idx,
+                                                          rel_only=rel_only)
         for t, p in zip(gt, predictions):
             cm_total[t, p] += 1
         precision_recall_res.append({"scan": scan_id + ".mha", "precision_opt_only": precision_opt_only,
@@ -235,7 +259,9 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
                        "top_frames": list(topk_indices[available_ks[-1]]) if available_ks else None,
                        "score": max_score,
                        "optimal_frames": optimal_frames, "suboptimal_frames": suboptimal_frames,
-                       "wfss": wfss_score, "accuracy": accuracy}
+                       "wfss": wfss_score, "accuracy": accuracy,
+                       "second_stage_candidates": len(idx_all) if model2 is not None else None,
+                       "no_relevant_frame": no_relevant}
         #score every requested top-k selection, leaving a k that the shortlist cannot serve empty,
         #and keep the ranked frames of each k so the metrics can be checked afterwards
         for k in topk_list:

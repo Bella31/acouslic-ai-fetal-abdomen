@@ -18,7 +18,7 @@ The networks table is a CSV with at least the columns  run_dir, arch, network, f
     network   relnet | optnet | optonly | threeclass
     fold      0..4
 
-train_subject_disjoint.sh writes exactly this file as it trains (subject_disjoint_manifest.csv).
+train_subject_disjoint.py writes exactly this file as it trains (subject_disjoint_manifest.csv).
 published_networks.csv in this folder lists the runs behind the submitted manuscript, so the same
 scripts also reproduce the published numbers.
 
@@ -121,7 +121,7 @@ def str2bool(v):
 def add_common_args(ap, default_archs):
     ap.add_argument('--networks', required=True,
                     help='networks table CSV (run_dir, arch, network, fold): the manifest written by '
-                         'train_subject_disjoint.sh, or published_networks.csv')
+                         'train_subject_disjoint.py, or published_networks.csv')
     ap.add_argument('--log_dir', default=DEFAULT_LOG_DIR, help='folder holding the run folders')
     ap.add_argument('--out_dir', default=None,
                     help='where the summary workbooks go (default: <folder of --networks>/'
@@ -137,8 +137,13 @@ def add_common_args(ap, default_archs):
                     help='read the fold split lists from <splits_root>/<family>/<fold>/data_split '
                          'instead of <data_dir>/data_split of each run (for running elsewhere)')
     ap.add_argument('--subject_csv', default=None,
-                    help='per-sweep circumference CSV with uuid and subject_id: adds subject_id to the '
-                         'per-scan sheet and reports any subject shared between training and evaluation')
+                    help='per-sweep circumference CSV with uuid and subject_id.  Required: nothing runs if '
+                         'a subject is shared between a network\'s training/validation scans and the scans '
+                         'it is evaluated on, or between its training and validation scans, or if a scan '
+                         'has no subject_id.  Also adds subject_id to the per-scan sheet')
+    ap.add_argument('--allow_subject_overlap', action='store_true',
+                    help='report subject overlap instead of stopping (for the published networks, whose '
+                         'splits were made per scan); the overlap is listed in the checks sheet')
     ap.add_argument('--python', default=sys.executable, help='interpreter that runs the evaluator')
     ap.add_argument('--use_gpu', type=str2bool, default=True)
     ap.add_argument('--summarize_only', action='store_true',
@@ -290,8 +295,11 @@ def subject_map(path):
     return dict(zip(df['uuid'].str.strip(), df['subject_id'].str.strip()))
 
 
-def check_cohorts(configs, archs, subopt_list, splits_root, subject_csv, required):
+def check_cohorts(configs, archs, subopt_list, splits_root, subject_csv, required, allow_overlap=False):
     """Check the evaluation cohorts behind the paired design.
+
+    Subject overlap (and scans without a subject_id) are problems, which stop the run, unless
+    allow_overlap is set; then they are listed as notes.
 
     Returns (expected, problems, notes), where expected = {'opt': {(arch, fold): set},
     'subopt': set} or None when the split lists are not readable and not required."""
@@ -353,26 +361,40 @@ def check_cohorts(configs, archs, subopt_list, splits_root, subject_csv, require
                     problems.append('run of %s %s fold %d has %d Suboptimal-only scans in its %s list, '
                                     'e.g. %s' % (key[0], key[1], key[2], len(both), which, sorted(both)[0]))
 
-    if subject_csv:
+    # subject overlap stops the run unless it is explicitly allowed (published networks)
+    flag = notes if allow_overlap else problems
+    hint = '' if allow_overlap else ' (--allow_subject_overlap only for networks trained on the published splits)'
+    if not subject_csv:
+        flag.append('subject overlap NOT checked: no --subject_csv' + hint)
+    elif not os.path.exists(subject_csv):
+        flag.append('subject overlap NOT checked: --subject_csv not found: %s' % subject_csv)
+    else:
         subj = subject_map(subject_csv)
         unknown = set()
-        overlap_rows = 0
+        overlap_rows = tv_rows = 0
         for key in configs:
             arch, net, fold = key
-            trained = lists[(key, 'training')] | lists[(key, 'valid')]
+            train, valid = lists[(key, 'training')], lists[(key, 'valid')]
             evaluated = set(opt.get((arch, fold), set())) | (subopt or set())
-            for u in trained | evaluated:
+            for u in train | valid | evaluated:
                 if u not in subj:
                     unknown.add(u)
-            shared = {subj.get(u) for u in trained} & {subj.get(u) for u in evaluated} - {None}
+            shared = {subj.get(u) for u in train | valid} & {subj.get(u) for u in evaluated} - {None}
             if shared:
                 overlap_rows += 1
-                notes.append('SUBJECT OVERLAP: %s %s fold %d trained on %d subjects it is also evaluated on'
-                             % (arch, net, fold, len(shared)))
+                flag.append('SUBJECT OVERLAP: %s %s fold %d was trained/validated on %d subjects it is also '
+                            'evaluated on (%s)%s' % (arch, net, fold, len(shared), ', '.join(sorted(shared)[:5]), hint))
+            tv = {subj.get(u) for u in train} & {subj.get(u) for u in valid} - {None}
+            if tv:
+                tv_rows += 1
+                flag.append('SUBJECT OVERLAP: %s %s fold %d has %d subjects in both training and validation '
+                            '(%s)%s' % (arch, net, fold, len(tv), ', '.join(sorted(tv)[:5]), hint))
         if unknown:
-            notes.append('%d scans have no subject_id in %s' % (len(unknown), subject_csv))
-        if not overlap_rows:
-            notes.append('subject check: no network was trained on a subject it is evaluated on')
+            flag.append('%d scans have no subject_id in %s, e.g. %s - their subjects cannot be checked'
+                        % (len(unknown), subject_csv, ', '.join(sorted(unknown)[:3])))
+        if not overlap_rows and not tv_rows and not unknown:
+            notes.append('subject check passed: training, validation and evaluated scans are subject-disjoint '
+                         'for every network')
 
     return {'opt': opt, 'subopt': subopt}, problems, notes
 
@@ -483,8 +505,20 @@ def prepare(args, section, methods, default_cohorts=COHORTS):
                     to_run.add((j.arch, j.method.second, j.fold))
     configs, problems = check_networks(table, needed, args.log_dir, require_model=to_run)
     expected, cproblems, notes = check_cohorts(configs, args.archs, args.subopt_list, args.splits_root,
-                                               args.subject_csv, required=running)
+                                               args.subject_csv, required=running,
+                                               allow_overlap=args.allow_subject_overlap)
     problems += cproblems
+    # which OptNet definition the table holds: trained with irrelevant frames as negatives (the published
+    # runs; config without exclude_irrelevant) or on relevant frames only.  Never mixed in one table.
+    optnet_modes = sorted({str2bool(cfg.get('exclude_irrelevant', False))
+                           for (arch, net, fold), cfg in configs.items() if net == 'optnet'})
+    if len(optnet_modes) > 1:
+        problems.append('the OptNet runs in %s mix two training definitions (exclude_irrelevant true and '
+                        'false); evaluate them separately' % args.networks)
+    elif optnet_modes:
+        notes.append('OptNet trained on %s' % ('relevant frames only (optimal vs suboptimal)' if optnet_modes[0]
+                                               else 'all frames, irrelevant counted with suboptimal '
+                                                    '(published definition)'))
     print('== %s ==' % section)
     for n in notes:
         print('  ' + n)
@@ -520,7 +554,7 @@ def collect(jobs, expected, subject_csv=None):
 
     Every metric is averaged over the scans of a fold first and then over the folds, which is
     how summarize_results.py aggregated the published numbers; the SD is over the fold means."""
-    subj = subject_map(subject_csv) if subject_csv else None
+    subj = subject_map(subject_csv) if subject_csv and os.path.exists(subject_csv) else None
     folds, scans, runs, checks = [], [], [], []
     for j in jobs:
         exists = bool(j.output) and os.path.exists(j.output)
@@ -544,7 +578,14 @@ def collect(jobs, expected, subject_csv=None):
                            ('fold', j.fold), ('n_scans', len(df))])
         for m in OPT_METRICS:
             if m in df.columns:
-                row[m] = pd.to_numeric(df[m], errors='coerce').mean()
+                v = pd.to_numeric(df[m], errors='coerce')
+                # a metric missing for SOME scans would be averaged over fewer scans than the other
+                # methods; missing for all (e.g. top-10 of a K=5 shortlist) just means not applicable
+                if v.isna().any() and v.notna().any():
+                    checks.append(('missing values', '%s %s fold %d %s: %s is missing for %d of %d scans, so '
+                                   'its mean would use fewer scans than the other methods'
+                                   % (j.method.name, j.arch, j.fold, j.cohort, m, int(v.isna().sum()), len(v))))
+                row[m] = v.mean()
         folds.append(row)
         keep = ['scan'] + [m for m in OPT_METRICS if m in df.columns]
         part = df[keep].copy()

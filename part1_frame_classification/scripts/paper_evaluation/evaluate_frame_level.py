@@ -17,6 +17,12 @@ Aggregation follows summarize_results.py, which produced the published table:
   - Suboptimal-only: per-scan precision/recall/F1 are averaged within each fold model and then
     over the five models
 
+F1 of a scan with target frames but no true positive is 0.  Prediction files written before this
+was fixed in evaluate_frame_selection.py hold an empty F1 there, and a mean that skips those scans
+is too high (in the published DenseNet files: Opt-only Suboptimal-only F1 0.471 -> 0.434).  So the
+per-scan F1 is recomputed here from the per-scan precision and recall, the same for old and new
+files; the checks sheet says how many scans this affected.
+
 These come from the same predictions files as the main comparison, so after
 evaluate_main_comparison.py has run this needs no inference at all.
 
@@ -54,11 +60,27 @@ def read_conf(path):
 
 
 def prf(tp, fp, fn):
-    """As calc_precision_recall_from_conf in evaluate_frame_selection.py."""
+    """As precision_recall_f1 in evaluate_frame_selection.py: F1 = 0 with no true positive."""
     p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f = 2 * p * r / (p + r) if (p + r) > 0 else np.nan
+    if p + r > 0:
+        f = 2 * p * r / (p + r)
+    else:
+        f = 0.0 if (tp + fp + fn) > 0 else np.nan
     return p, r, f
+
+
+def per_scan_f1(pr):
+    """Relevant-vs-irrelevant F1 per scan from its precision and recall; 0 when both are 0 and the
+    scan has relevant frames.  Returns (f1, number of scans whose file F1 was empty but is 0)."""
+    p = pd.to_numeric(pr['precision_opt_subopt'], errors='coerce')
+    r = pd.to_numeric(pr['recall_opt_subopt'], errors='coerce')
+    has_target = (pd.to_numeric(pr['num_opt'], errors='coerce') +
+                  pd.to_numeric(pr['num_subopt'], errors='coerce')) > 0
+    denom = (p + r).where((p + r) > 0)
+    f1 = (2 * p * r / denom).where(denom.notna(), np.where(has_target, 0.0, np.nan))
+    was_empty = pd.to_numeric(pr['F1_opt_subopt'], errors='coerce').isna()
+    return f1, int((was_empty & f1.notna()).sum())
 
 
 def tasks_from_conf(cm):
@@ -83,6 +105,7 @@ def main():
 
     pooled = OrderedDict()          # (method, arch, cohort) -> summed confusion matrix
     subopt_rows = []
+    zero_f1 = OrderedDict()         # (method, arch) -> scans whose empty F1 is counted as 0
     for j in jobs:
         if not (j.output and os.path.exists(j.output)):
             continue
@@ -91,9 +114,12 @@ def main():
         pooled[key] = cm if key not in pooled else pooled[key] + cm
         if j.cohort == 'subopt':
             pr = pd.read_excel(j.output, sheet_name='precision_recall')
+            f1, n_zero = per_scan_f1(pr)
+            zero_f1[(j.method.name, j.arch)] = zero_f1.get((j.method.name, j.arch), 0) + n_zero
             subopt_rows.append(OrderedDict([('method', j.method.name), ('arch', j.arch), ('fold', j.fold)] +
                                            [(c, pd.to_numeric(pr[c], errors='coerce').mean())
-                                            for c in ('precision_opt_subopt', 'recall_opt_subopt', 'F1_opt_subopt')]))
+                                            for c in ('precision_opt_subopt', 'recall_opt_subopt')] +
+                                           [('F1_opt_subopt', f1.mean()), ('scans_F1_counted_as_0', n_zero)]))
 
     opt_rows, conf_rows = [], []
     for (name, arch, cohort), cm in pooled.items():
@@ -130,6 +156,9 @@ def main():
     print(table.round(3).to_string(index=False))
     print('\nprecision / recall, Optimal-included (pooled over all scans)')
     print(pr_opt.round(3).to_string(index=False))
+    more = more + [('note', '%s %s: %d Suboptimal-only scan-fold values had no true positive and an empty F1 '
+                             'in the predictions file; counted as F1 = 0' % (name, C.ARCH_LABEL[arch], n))
+                   for (name, arch), n in zero_f1.items() if n]
     C.write_workbook(args, SECTION, [('table_f1', table), ('pr_opt_pooled', pr_opt),
                                      ('pr_subopt_mean', pr_subopt), ('pr_subopt_folds', sub_folds),
                                      ('confusion_pooled', pd.DataFrame(conf_rows)), ('runs', runs)],

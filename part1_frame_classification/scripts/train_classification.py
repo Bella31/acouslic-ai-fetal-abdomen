@@ -63,8 +63,26 @@ NAME_TO_NEW_POS = {
     'optimal': 1
 }
 
-def make_binary_dataset(root, split, transform, name_to_new, pos_only):
+def make_binary_dataset(root, split, transform, name_to_new, pos_only, exclude_irrelevant=False):
     ds = ImageFolder(os.path.join(root, split), transform=transform)
+
+    # The frame folders hold all three classes (irrelevant, optimal, suboptimal). NAME_TO_NEW_POS has no
+    # entry for 'irrelevant', so with pos_only those frames keep their ImageFolder index, which is 0: OptNet
+    # learns optimal (1) vs not optimal (0), suboptimal and irrelevant together. This is intended and is how
+    # the published OptNet runs were trained: the shortlist OptNet re-ranks at inference can contain
+    # irrelevant frames, and they must rank as not optimal. exclude_irrelevant (off by default) would drop
+    # them, giving a network that has only seen optimal and suboptimal frames.
+    if exclude_irrelevant:
+        drop_idx = ds.class_to_idx.get('irrelevant')
+        if drop_idx is not None:
+            kept = [(path, target) for path, target in ds.samples if target != drop_idx]
+            ds.samples = kept
+            ds.imgs = kept
+            ds.targets = [target for _, target in kept]
+    unmapped = [c for c in ds.class_to_idx if c not in name_to_new and not (exclude_irrelevant and c == 'irrelevant')]
+    if unmapped:
+        print(f"[NOTE] {split}: class folders {unmapped} are trained with their folder index "
+              f"{[ds.class_to_idx[c] for c in unmapped]}" + (" (not optimal, with suboptimal)" if pos_only else ""))
 
     # Build mapping from the dataset's original numeric label -> your new label
     oldidx_to_newidx = {old_idx: name_to_new.get(cls_name, old_idx)
@@ -80,7 +98,7 @@ def make_binary_dataset(root, split, transform, name_to_new, pos_only):
 
     return ds
 
-def get_binary_dataloaders(base_path, batch_size, opt_only, pos_only):
+def get_binary_dataloaders(base_path, batch_size, opt_only, pos_only, exclude_irrelevant=False):
     train_transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=1),
         transforms.RandomResizedCrop(256, scale=(0.8, 1.0)),
@@ -104,9 +122,9 @@ def get_binary_dataloaders(base_path, batch_size, opt_only, pos_only):
         mapping = NAME_TO_NEW_POS
     else:
         mapping = NAME_TO_NEW
-    train_ds = make_binary_dataset(base_path, 'train', train_transform, mapping, pos_only)
-    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, mapping, pos_only)
-    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, mapping, pos_only)
+    train_ds = make_binary_dataset(base_path, 'train', train_transform, mapping, pos_only, exclude_irrelevant)
+    val_ds = make_binary_dataset(base_path, 'val', val_test_transform, mapping, pos_only, exclude_irrelevant)
+    test_ds = make_binary_dataset(base_path, 'test', val_test_transform, mapping, pos_only, exclude_irrelevant)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=2, pin_memory=True)
@@ -116,6 +134,28 @@ def get_binary_dataloaders(base_path, batch_size, opt_only, pos_only):
                              num_workers=2, pin_memory=True)
 
     return train_loader, val_loader, test_loader
+
+
+def write_class_counts(loaders, out_path):
+    """
+    Save how many images of each class folder went into each split, and the label each was trained with,
+    so a run folder records what the network actually saw (the config flags alone do not).
+    """
+    rows = []
+    for split, loader in loaders:
+        ds = loader.dataset
+        idx_to_class = {v: k for k, v in ds.class_to_idx.items()}
+        counts = {}
+        for _, target in ds.samples:
+            counts[target] = counts.get(target, 0) + 1
+        for target in sorted(counts):
+            label = ds.target_transform(target) if ds.target_transform is not None else target
+            rows.append({'split': split, 'folder': idx_to_class[target], 'label': int(label),
+                         'images': counts[target]})
+    counts_df = pd.DataFrame(rows, columns=['split', 'folder', 'label', 'images'])
+    counts_df.to_csv(out_path, index=False)
+    print('images per class folder and the label they are trained with:')
+    print(counts_df.to_string(index=False))
 
 
 def get_dataloaders(base_path, batch_size):
@@ -305,11 +345,17 @@ if __name__ == "__main__":
                                                                          " considered as 1 for binary classification")
     parser.add_argument("--pos_only", type=str2bool, default=False, help="Should we train a network"
                                                                          " only on positive samples")
+    parser.add_argument("--exclude_irrelevant", type=str2bool, default=False,
+                        help="with --pos_only: drop the irrelevant frames, so the network is trained on optimal vs "
+                             "suboptimal frames only. Without it, irrelevant frames are trained as the suboptimal "
+                             "class, as in the published OptNet runs")
     parser.add_argument("--num_classes", type=int, default=3, help="patience")
     parser.add_argument("--loss", type=str, default="focal", help="patience")
     parser.add_argument("--model_name", type=str, default="resnet", help="model name")
 
     args = parser.parse_args()
+    if args.exclude_irrelevant and not (args.pos_only and args.num_classes == 2):
+        parser.error("--exclude_irrelevant is only meaningful with --pos_only true and --num_classes 2")
 
     model_dir = get_create_model_dir(args.log_dir)
     model_save_path = os.path.join(model_dir, 'model.pt')
@@ -318,16 +364,19 @@ if __name__ == "__main__":
     out_cfg_path = os.path.join(model_dir, 'config.json')
     ParamsReadWrite.write_config(out_cfg_path, args.data_dir, args.epochs, args.batch_size, args.lr, args.weight_decay,
                                  args.patience, args.min_epoch, args.apply_mixup, args.num_classes, args.loss,
-                                 args.pos_only, args.opt_only, args.model_name)
+                                 args.pos_only, args.opt_only, args.model_name,
+                                 exclude_irrelevant=args.exclude_irrelevant)
     metrics_path = os.path.join(model_dir, 'train_metrics.csv')
     # Load data
     if args.num_classes == 3:
         train_loader, val_loader, test_loader = get_dataloaders(args.data_dir, args.batch_size)
     elif args.num_classes == 2:
         train_loader, val_loader, test_loader = get_binary_dataloaders(args.data_dir, args.batch_size, args.opt_only,
-                                                                       args.pos_only)
+                                                                       args.pos_only, args.exclude_irrelevant)
     else:
         print('number of classes ' + str(args.num_classes + ' is not supported'))
+    write_class_counts([('train', train_loader), ('val', val_loader), ('test', test_loader)],
+                       os.path.join(model_dir, 'class_counts.csv'))
     # Initialize model and optimizer
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = build_model(model_name=args.model_name, num_classes=args.num_classes, device=device)

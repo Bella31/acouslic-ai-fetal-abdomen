@@ -33,9 +33,11 @@ WHAT THIS DOES
 
 TRAIN/VALIDATION OVERLAP
     A subject with one scan in training and the other in validation contaminates model selection
-    (early stopping), not the test estimate.  It is reported but left alone by default, because
-    validation holds only 9 scans and dropping from it costs more than the overlap does.  Pass
-    --separate_train_valid to remove it as well.
+    (early stopping and the learning-rate schedule), not the test estimate directly.  It is removed
+    too, by withholding that subject's TRAINING scans: validation holds only about 9 scans per fold
+    and training about 150, so the validation set is kept whole.  After this, training, validation
+    and test are subject-disjoint within every fold.  --keep_train_valid_overlap leaves this overlap
+    in place (the first version of this script did).
 
 AFTER RUNNING THIS
     The output has the same layout the rest of the pipeline expects,
@@ -66,6 +68,9 @@ USAGE
 
     Deterministic and idempotent: the same inputs always give the same output, and running it on
     an already-corrected tree changes nothing.
+
+    --check_only compares an existing --output with what this script produces now and verifies it,
+    writing nothing; it exits 1 if they differ (e.g. lists made by an earlier version).
 """
 
 import argparse
@@ -137,6 +142,88 @@ def fold_names(split_path):
         return sorted(names)
 
 
+def correct_family(original, subject_of, subopt_subjects, keep_tv_overlap):
+    """The corrected split lists, computed in memory.  Returns (kept, withheld_rows, tv_overlap_total)."""
+    kept_all = OrderedDict()
+    withheld_rows = []
+    tv_overlap_total = 0
+    for fold, roles in original.items():
+        test_ids = roles['test']
+        protected = {subject_of[stem(i)] for i in test_ids} | subopt_subjects
+
+        kept = OrderedDict()
+        kept['test'] = list(test_ids)        # never touched
+
+        dropped_here = []
+        for file_stem in ('training', 'valid'):
+            keep_list = []
+            for i in roles[file_stem]:
+                sid = subject_of[stem(i)]
+                if sid in protected:
+                    dropped_here.append((file_stem, i, sid, 'subject evaluated by this fold'))
+                else:
+                    keep_list.append(i)
+            kept[file_stem] = keep_list
+
+        # training/validation subject overlap: withhold the training scans, keep validation whole
+        tv_overlap = sorted({subject_of[stem(i)] for i in kept['valid']} &
+                            {subject_of[stem(i)] for i in kept['training']})
+        tv_overlap_total += len(tv_overlap)
+        if tv_overlap and not keep_tv_overlap:
+            overlap = set(tv_overlap)
+            remaining = []
+            for i in kept['training']:
+                sid = subject_of[stem(i)]
+                if sid in overlap:
+                    dropped_here.append(('training', i, sid, 'subject also in this fold\'s validation set'))
+                else:
+                    remaining.append(i)
+            kept['training'] = remaining
+
+        kept_all[fold] = OrderedDict((k, kept[k]) for k in ROLE_FILES)
+        for file_stem, scan, sid, reason in dropped_here:
+            withheld_rows.append(OrderedDict([
+                ('fold', fold), ('removed_from', file_stem), ('scan', scan), ('subject_id', sid),
+                ('reason', reason)]))
+    return kept_all, withheld_rows, tv_overlap_total
+
+
+def verify_tree(output, original, subject_of, subopt_subjects, require_tv_disjoint):
+    """Re-read written split lists and list every violation of the design."""
+    problems = []
+    folds = fold_names(output)
+    if folds != list(original):
+        problems.append('folds %s, expected %s' % (folds, list(original)))
+    for fold in folds:
+        base = os.path.join(output, fold, 'data_split')
+        got = {s_: read_ids(os.path.join(base, '%s_ids.txt' % s_)) for s_ in ROLE_FILES}
+        if fold in original and got['test'] != original[fold]['test']:
+            problems.append('fold %s: test set changed' % fold)
+        unknown = sorted({stem(i) for ids in got.values() for i in ids} - set(subject_of))
+        if unknown:
+            problems.append('fold %s: %d scans without a subject id, e.g. %s' % (fold, len(unknown), unknown[0]))
+            continue
+        subj = {k: {subject_of[stem(i)] for i in v} for k, v in got.items()}
+        seen = subj['training'] | subj['valid']
+        bad = sorted(seen & subj['test'])
+        if bad:
+            problems.append('fold %s: %d subjects in both test and train/valid: %s'
+                            % (fold, len(bad), ', '.join(bad)))
+        bad_sub = sorted(seen & subopt_subjects)
+        if bad_sub:
+            problems.append('fold %s: %d Suboptimal-only subjects still trained on: %s'
+                            % (fold, len(bad_sub), ', '.join(bad_sub)))
+        if require_tv_disjoint:
+            tv = sorted(subj['training'] & subj['valid'])
+            if tv:
+                problems.append('fold %s: %d subjects in both training and validation: %s'
+                                % (fold, len(tv), ', '.join(tv)))
+        overlap = set(got['training']) & set(got['valid'])
+        if overlap:
+            problems.append('fold %s: %d scans in both training and validation' % (fold, len(overlap)))
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser(
         description='Withhold training/validation scans that share a subject with an evaluated scan.')
@@ -147,16 +234,17 @@ def main():
     ap.add_argument('--output', required=True, help='where to write the corrected family')
     ap.add_argument('--uuid_col', default='uuid')
     ap.add_argument('--subject_col', default='subject_id')
-    ap.add_argument('--separate_train_valid', action='store_true',
-                    help='also remove subject overlap between training and validation '
-                         '(drops from validation; off by default, see the module docstring)')
+    ap.add_argument('--keep_train_valid_overlap', action='store_true',
+                    help='leave subjects that have scans in both training and validation in place '
+                         '(by default their training scans are withheld; see the module docstring)')
+    ap.add_argument('--check_only', action='store_true',
+                    help='write nothing: compare the existing --output with what this script produces '
+                         'and verify it; exit 1 if it differs or fails')
     ap.add_argument('--report', default=None,
                     help='CSV listing every withheld scan (default: <output>_withheld_scans.csv, next to '
                          'the output folder; it may not go inside it, see the module docstring)')
     ap.add_argument('--overwrite', action='store_true',
                     help='replace the output directory if it already exists')
-    ap.add_argument('--verify', action='store_true', default=True,
-                    help='re-read the written files and confirm subject disjointness (default on)')
     args = ap.parse_args()
 
     subject_of = load_subject_map(args.subject_csv, args.uuid_col, args.subject_col)
@@ -189,7 +277,36 @@ def main():
     subopt_only = sorted(set(subject_of) - everything_in_splits)
     subopt_subjects = {subject_of[u] for u in subopt_only}
 
-    # ---- correct each fold -----------------------------------------------------------------
+    kept_all, withheld_rows, tv_overlap_total = correct_family(original, subject_of, subopt_subjects,
+                                                               args.keep_train_valid_overlap)
+    require_tv = not args.keep_train_valid_overlap
+
+    # ---- check an existing tree -----------------------------------------------------------
+    if args.check_only:
+        if not os.path.isdir(args.output):
+            raise SystemExit('nothing to check: %s does not exist' % args.output)
+        problems = []
+        for fold, kept in kept_all.items():
+            for file_stem, ids in kept.items():
+                p = os.path.join(args.output, fold, 'data_split', '%s_ids.txt' % file_stem)
+                if not os.path.exists(p):
+                    problems.append('missing %s' % p)
+                elif read_ids(p) != ids:
+                    problems.append('fold %s %s_ids.txt differs from what this script produces now'
+                                    % (fold, file_stem))
+        problems += verify_tree(args.output, original, subject_of, subopt_subjects, require_tv)
+        if problems:
+            print('CHECK FAILED for %s' % args.output)
+            for p in problems:
+                print('  ' + p)
+            print('These lists were probably made by an earlier version of this script. Move the folder '
+                  'aside (and any frames extracted into it) and generate it again.')
+            sys.exit(1)
+        print('CHECK OK: %s matches this script and is subject-disjoint%s'
+              % (args.output, ' (training/validation included)' if require_tv else ''))
+        return
+
+    # ---- write -----------------------------------------------------------------------------
     src_abs = os.path.abspath(args.existing_split_path).rstrip(os.sep)
     dst_abs = os.path.abspath(args.output).rstrip(os.sep)
     if dst_abs == src_abs or dst_abs.startswith(src_abs + os.sep) or src_abs.startswith(dst_abs + os.sep):
@@ -217,52 +334,13 @@ def main():
                              % (args.output, '; '.join(foreign[:5])))
         shutil.rmtree(args.output)
 
-    withheld_rows = []
-    tv_overlap_total = 0
-    print('fold   train+valid   ->   kept    withheld     (test kept intact)')
-    for fold in folds:
-        roles = original[fold]
-        test_ids = roles['test']
-        protected = {subject_of[stem(i)] for i in test_ids} | subopt_subjects
-
-        kept = OrderedDict()
-        kept['test'] = list(test_ids)        # never touched
-
-        dropped_here = []
-        for file_stem in ('training', 'valid'):
-            keep_list = []
-            for i in roles[file_stem]:
-                sid = subject_of[stem(i)]
-                if sid in protected:
-                    dropped_here.append((file_stem, i, sid))
-                else:
-                    keep_list.append(i)
-            kept[file_stem] = keep_list
-
-        # optional: remove training/validation subject overlap by dropping from validation
-        tv_overlap = sorted({subject_of[stem(i)] for i in kept['valid']} &
-                            {subject_of[stem(i)] for i in kept['training']})
-        tv_overlap_total += len(tv_overlap)
-        if args.separate_train_valid and tv_overlap:
-            overlap = set(tv_overlap)
-            remaining = []
-            for i in kept['valid']:
-                if subject_of[stem(i)] in overlap:
-                    dropped_here.append(('valid', i, subject_of[stem(i)]))
-                else:
-                    remaining.append(i)
-            kept['valid'] = remaining
-
-        before = len(roles['training']) + len(roles['valid'])
-        after = len(kept['training']) + len(kept['valid'])
-        print('  %-4s %6d        ->  %5d   %5d          %d -> %d'
-              % (fold, before, after, before - after, len(test_ids), len(kept['test'])))
-
-        for file_stem, scan, sid in dropped_here:
-            withheld_rows.append(OrderedDict([
-                ('fold', fold), ('removed_from', file_stem), ('scan', scan), ('subject_id', sid),
-                ('reason', 'subject evaluated by this fold')]))
-
+    print('fold   train  valid   ->   train  valid   withheld     (test kept intact)')
+    for fold, kept in kept_all.items():
+        o = original[fold]
+        print('  %-4s %5d  %5d   ->   %5d  %5d   %5d          %d -> %d'
+              % (fold, len(o['training']), len(o['valid']), len(kept['training']), len(kept['valid']),
+                 len(o['training']) + len(o['valid']) - len(kept['training']) - len(kept['valid']),
+                 len(o['test']), len(kept['test'])))
         base_out = os.path.join(args.output, fold, 'data_split')
         for file_stem in ROLE_FILES:
             write_ids(os.path.join(base_out, '%s_ids.txt' % file_stem), kept[file_stem])
@@ -282,46 +360,26 @@ def main():
 
     print('')
     print('dataset: %d scans, %d subjects, %d subjects with more than one scan'
-          % (len(subject_of), len(scans_of), sum(1 for s in scans_of.values() if len(s) > 1)))
+          % (len(subject_of), len(scans_of), sum(1 for s_ in scans_of.values() if len(s_) > 1)))
     print('Suboptimal-only cohort in this family: %d scans (untouched)' % len(subopt_only))
     print('withheld in total: %d scan-fold entries, %d distinct scans'
           % (len(withheld_rows), len({r['scan'] for r in withheld_rows})))
     print('training/validation subject overlap: %d subject-fold entries%s'
-          % (tv_overlap_total, ' (removed)' if args.separate_train_valid else ' (left in place)'))
+          % (tv_overlap_total, ' (left in place)' if args.keep_train_valid_overlap
+             else ' (removed from training)'))
     print('report: %s' % report_path)
 
-    # ---- verify ----------------------------------------------------------------------------
-    if args.verify:
-        problems = []
-        for fold in fold_names(args.output):
-            base = os.path.join(args.output, fold, 'data_split')
-            got = {s: read_ids(os.path.join(base, '%s_ids.txt' % s)) for s in ROLE_FILES}
-
-            if got['test'] != original[fold]['test']:
-                problems.append('fold %s: test set changed' % fold)
-
-            seen = {subject_of[stem(i)] for i in got['training']} | \
-                   {subject_of[stem(i)] for i in got['valid']}
-            bad = sorted(seen & {subject_of[stem(i)] for i in got['test']})
-            if bad:
-                problems.append('fold %s: %d subjects in both test and train/valid: %s'
-                                % (fold, len(bad), ', '.join(bad)))
-            bad_sub = sorted(seen & subopt_subjects)
-            if bad_sub:
-                problems.append('fold %s: %d Suboptimal-only subjects still trained on: %s'
-                                % (fold, len(bad_sub), ', '.join(bad_sub)))
-            overlap = {i for i in got['training']} & {i for i in got['valid']}
-            if overlap:
-                problems.append('fold %s: %d scans in both training and validation' % (fold, len(overlap)))
-
-        print('')
-        if problems:
-            print('VERIFY FAILED')
-            for p in problems:
-                print('  ' + p)
-            sys.exit(1)
-        print('VERIFY OK: every fold is subject-disjoint between train/valid and '
-              'test + Suboptimal-only, and all test sets are byte-identical to the originals.')
+    # ---- verify what was written -----------------------------------------------------------
+    problems = verify_tree(args.output, original, subject_of, subopt_subjects, require_tv)
+    print('')
+    if problems:
+        print('VERIFY FAILED')
+        for p in problems:
+            print('  ' + p)
+        sys.exit(1)
+    print('VERIFY OK: every fold is subject-disjoint between train/valid and test + Suboptimal-only%s, '
+          'and all test sets are identical to the originals.'
+          % (', and between training and validation' if require_tv else ''))
 
 
 if __name__ == '__main__':
