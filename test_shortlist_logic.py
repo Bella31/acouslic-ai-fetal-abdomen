@@ -1,8 +1,9 @@
 """
-Check the frame ranking logic of the modified evaluate_frame_selection.py.
+Check the frame ranking logic of evaluate_frame_selection.py.
 
 The functions under test are pulled out of the source file and run on their own, so the test needs only
-numpy and does not load torch, the networks or the scans. Run it before spending GPU time on the sweep.
+numpy and pandas and does not load torch, the networks or the scans. Run it before spending GPU time on
+the sweep.
 
 Usage:
     python test_shortlist_logic.py
@@ -16,7 +17,7 @@ import numpy as np
 
 SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       'part1_frame_classification', 'scripts', 'evaluate_frame_selection.py')
-FUNCTIONS = ['get_top_k_indices', 'calc_topk_indices', 'str2intlist', 'prepare_labels',
+FUNCTIONS = ['rank_frames', 'get_top_k_indices', 'calc_topk_indices', 'str2intlist', 'prepare_labels',
              'validate_scan_labels']
 
 
@@ -95,7 +96,7 @@ def main():
           all(0 <= int(i) < len(scores) for k in topk for i in topk[k]))
     check('selections hold no duplicates', all(len(set(topk[k].tolist())) == len(topk[k]) for k in topk))
 
-    print('\ncalc_topk_indices, shortlist of 3, the case that used to raise UnboundLocalError')
+    print('\ncalc_topk_indices, shortlist of 3, must return without raising')
     shortlist3 = get_top_k_indices(scores, 3)
     probs2_3 = np.zeros((3, 2))
     probs2_3[:, 1] = np.array([0.3, 0.9, 0.5])
@@ -128,9 +129,9 @@ def main():
           best_low == int(shortlist5[int(np.argmax(probs2_low[:, 0]))]), 'got %s' % best_low)
     check('max_score still reports the optimal probability', abs(max_low - 0.2) < 1e-9, 'got %s' % max_low)
 
-    print('\nregression against the original implementation at shortlist size 5')
-    #the original code, copied verbatim from the unmodified evaluate_frame_selection.py, restricted to the
-    #branch it actually ran: a shortlist of exactly 5, where neither broken fallback was reached
+    print('\nregression against a fixed top-5 reference implementation at shortlist size 5')
+    #reference implementation of a fixed top-5 shortlist with top-3 and top-5 re-ranking, restricted to a
+    #shortlist of exactly 5, where no fallback for shorter shortlists is needed
     def original_shortlist(scores_in):
         idx5 = np.argpartition(scores_in, -5)[-5:]
         return idx5[np.argsort(scores_in[idx5])[::-1]]
@@ -168,7 +169,7 @@ def main():
     check('2000 random scans give byte-identical selections at shortlist size 5', mismatches == 0,
           'mismatches: %d' % mismatches)
 
-    print('\nlabel handling, the row order bug')
+    print('\nlabel handling, labels follow the frame order whatever the csv row order')
     import pandas as pd
     prepare_labels = ns['prepare_labels']
     validate_scan_labels = ns['validate_scan_labels']
@@ -180,12 +181,12 @@ def main():
     reversed_rows = pd.DataFrame(list(reversed(rows)))
 
     def frame_labels_in_row_order(df, scan_id='scan_a'):
-        """the original lookup, which reads the labels in whatever order the rows happen to be in"""
+        """a lookup that reads the labels in csv row order, without sorting by frame"""
         scan_df = df[df['Filename'] == scan_id + '.mha']
         mapping = {0: 'irrelevant', 1: 'optimal', 2: 'suboptimal'}
         return [mapping.get(v, v) for v in list(scan_df['Label'])]
 
-    check('reversing the csv rows does change the old lookup',
+    check('reversing the csv rows does change the row order lookup',
           frame_labels_in_row_order(ordered)[3] == 'optimal'
           and frame_labels_in_row_order(reversed_rows)[3] != 'optimal')
     check('prepare_labels restores the frame order',

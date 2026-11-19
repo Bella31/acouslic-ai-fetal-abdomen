@@ -1,12 +1,13 @@
 """
-Compare the training settings of a retraining run with the saved config.json of the published runs.
+Compare the training settings of new runs with the saved config.json of the reference runs.
 
-train_subject_disjoint.py calls this before training, so the retrained networks differ from the
-published ones only where intended (the split lists, and OptNet's frames if chosen), not in a
-hyper-parameter copied wrongly.  The published run folders are found through
-paper_evaluation/published_networks.csv in --log_dir.
+The reference runs are the networks trained on the original per-scan splits (their subjects overlap
+between training and test). train_subject_disjoint.py calls this before training, so the
+subject-disjoint networks differ from the reference ones only where intended (the split lists, and
+OptNet's frames if chosen), not in a hyper-parameter copied wrongly.  The reference run folders are
+found through paper_evaluation/published_networks.csv in --log_dir.
 
-    # print the loss the published networks of one type were trained with (all must agree)
+    # print the loss the reference networks of one type were trained with (all must agree)
     python -m part1_frame_classification.scripts.check_against_published_configs \
         --log_dir <network folder> --print_loss threeclass
 
@@ -16,8 +17,8 @@ paper_evaluation/published_networks.csv in --log_dir.
         --epochs 50 --batch_size 32 --lr 3e-4 --weight_decay 1e-5 --patience 20 --min_epoch 10 \
         --loss CE --threeclass_loss CE
 
-Exit 1 on a mismatch, or when --print_loss finds no published config or disagreeing ones.
-Published configs that are not in --log_dir are reported and skipped (exit 0), unless --strict.
+Exit 1 on a mismatch, or when --print_loss finds no reference config or disagreeing ones.
+Reference configs that are not in --log_dir are reported and skipped (exit 0), unless --strict.
 """
 
 import argparse
@@ -43,7 +44,7 @@ def as_bool(v):
 
 
 def published_runs(path):
-    """{(arch, network): [run_dir, ...]} from the published networks table."""
+    """{(arch, network): [run_dir, ...]} from the reference networks table."""
     out = {}
     with open(path) as fh:
         for row in csv.DictReader(fh):
@@ -68,10 +69,10 @@ def same(a, b):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--published', default=DEFAULT_PUBLISHED, help='published networks table')
-    ap.add_argument('--log_dir', required=True, help='folder holding the published run folders')
+    ap.add_argument('--published', default=DEFAULT_PUBLISHED, help='reference networks table')
+    ap.add_argument('--log_dir', required=True, help='folder holding the reference run folders')
     ap.add_argument('--print_loss', choices=sorted(NETWORK_TYPES),
-                    help='print the loss of the published networks of this type and exit')
+                    help='print the loss of the reference networks of this type and exit')
     ap.add_argument('--archs', nargs='+', default=[])
     ap.add_argument('--nets', nargs='+', default=[], choices=sorted(NETWORK_TYPES))
     ap.add_argument('--epochs', type=int)
@@ -83,7 +84,7 @@ def main():
     ap.add_argument('--apply_mixup', default='False')
     ap.add_argument('--loss', help='loss of the binary networks')
     ap.add_argument('--threeclass_loss', help='loss of the three-class network')
-    ap.add_argument('--strict', action='store_true', help='fail when a published config is not found')
+    ap.add_argument('--strict', action='store_true', help='fail when a reference config is not found')
     args = ap.parse_args()
 
     runs = published_runs(args.published)
@@ -99,13 +100,13 @@ def main():
                     losses.add(str(cfg.get('loss')))
                     found.append(r)
         if not found:
-            sys.stderr.write('no config.json of a published %s run in %s\n' % (args.print_loss, args.log_dir))
+            sys.stderr.write('no config.json of a reference %s run in %s\n' % (args.print_loss, args.log_dir))
             sys.exit(1)
         if len(losses) != 1:
-            sys.stderr.write('published %s runs disagree on the loss: %s (runs %s)\n'
+            sys.stderr.write('reference %s runs disagree on the loss: %s (runs %s)\n'
                              % (args.print_loss, ', '.join(sorted(losses)), ', '.join(found)))
             sys.exit(1)
-        sys.stderr.write('loss of the published %s runs (%s): %s\n'
+        sys.stderr.write('loss of the reference %s runs (%s): %s\n'
                          % (args.print_loss, ', '.join(found), next(iter(losses))))
         print(next(iter(losses)))
         return
@@ -139,24 +140,24 @@ def main():
                     else:
                         ok = same(got, v)
                     if not ok:
-                        mismatches.append('%s %s run %s: %s = %s in the published config, %s here'
+                        mismatches.append('%s %s run %s: %s = %s in the reference config, %s here'
                                           % (arch, net, r, k, got, v))
                 family = os.path.basename(os.path.dirname(str(cfg.get('data_dir', '')).rstrip('/')))
                 if spec['family'] not in family:
-                    mismatches.append('%s %s run %s: published run used family %r, expected %r'
+                    mismatches.append('%s %s run %s: reference run used family %r, expected %r'
                                       % (arch, net, r, family, spec['family']))
 
-    print('compared with %d published configs' % checked)
+    print('compared with %d reference configs' % checked)
     for m in missing:
         print('  not compared: ' + m)
     if mismatches:
-        print('SETTINGS DIFFER FROM THE PUBLISHED RUNS:')
+        print('SETTINGS DIFFER FROM THE REFERENCE RUNS:')
         for m in mismatches:
             print('  ' + m)
         sys.exit(1)
     if missing and args.strict:
         sys.exit(1)
-    print('settings match the published runs')
+    print('settings match the reference runs')
 
 
 if __name__ == '__main__':

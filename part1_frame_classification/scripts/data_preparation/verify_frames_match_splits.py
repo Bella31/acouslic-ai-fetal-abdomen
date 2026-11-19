@@ -10,7 +10,7 @@ results:
      scans' images in train/ - and the network trains on them, so the leakage the correction was
      meant to remove is still there.
 
-  2. WRONG BALANCED CSV.  The two split families were built from different balanced CSVs
+  2. WRONG BALANCED CSV.  The two split families are built from different balanced CSVs
      (labels_balanced_opt_using_subopt.csv and labels_balanced_opt_no_subopt.csv).  Extracting a
      family with the other one silently changes which frames, and how many suboptimal frames, the
      network sees.

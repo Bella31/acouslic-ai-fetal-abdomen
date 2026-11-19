@@ -19,11 +19,10 @@ The networks table is a CSV with at least the columns  run_dir, arch, network, f
     fold      0..4
 
 train_subject_disjoint.py writes exactly this file as it trains (subject_disjoint_manifest.csv).
-published_networks.csv in this folder lists the runs behind the submitted manuscript, so the same
-scripts also reproduce the published numbers.
+published_networks.csv in this folder lists reference networks trained on per-scan splits; their
+splits share subjects, so they are evaluated with --allow_subject_overlap.
 
-Predictions files go where the earlier evaluations put them, inside the run folder of the network
-that owns the result, so existing tools keep working:
+Predictions files go inside the run folder of the network that owns the result:
 
     <log_dir>/<run>/results/predictions_<run>[_subopt][<suffix>].xlsx
 
@@ -53,7 +52,7 @@ REPO_ROOT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, os.pardir)
 EVALUATOR_MODULE = 'part1_frame_classification.scripts.evaluate_frame_selection'
 EVALUATOR_FILE = os.path.join(REPO_ROOT, 'part1_frame_classification', 'scripts', 'evaluate_frame_selection.py')
 
-# defaults are the locations on the GPU machine; override them on the command line elsewhere
+# default paths; override them on the command line
 GPU_OUT = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output'
 DEFAULT_LOG_DIR = GPU_OUT + '/network'
 DEFAULT_SCAN_DIR = ('/media/bella/8A1D-C0A6/Academy/Home_ultrasound/acouslic-ai-train-set/images/'
@@ -82,7 +81,7 @@ NETWORK_TYPES = {
 #                   network (the paper's two-step, K=5); 0 = every frame the first network calls
 #                   relevant goes to the second network ("Two-step (relevant)")
 #   topk            top-k selections scored besides the single best frame
-#   suffix          predictions file suffix, matching the files of the published evaluation
+#   suffix          predictions file suffix
 Method = namedtuple('Method', 'name first second num_classes shortlist topk suffix')
 METHODS = OrderedDict((m.name, m) for m in [
     Method('One-step',            'relnet',     None,     2, None, (3, 5), ''),
@@ -98,8 +97,8 @@ def shortlist_method(k):
     return Method('Two-step K=%d' % k, 'relnet', 'optnet', 2, int(k), (3, 5, 10), '_k%d' % int(k))
 
 
-# rough per-scan inference seconds on the GPU machine, from the published predictions, plus
-# reading the .mha; used only for the time estimate printed before running
+# rough per-scan inference seconds, plus reading the .mha; used only for the time estimate
+# printed before running
 SECONDS_PER_SCAN = {'densenet': 3.0, 'resnet': 2.4, 'efficientnet': 2.6, 'convnext': 8.7}
 LOAD_SECONDS = 1.0
 
@@ -142,15 +141,15 @@ def add_common_args(ap, default_archs):
                          'it is evaluated on, or between its training and validation scans, or if a scan '
                          'has no subject_id.  Also adds subject_id to the per-scan sheet')
     ap.add_argument('--allow_subject_overlap', action='store_true',
-                    help='report subject overlap instead of stopping (for the published networks, whose '
-                         'splits were made per scan); the overlap is listed in the checks sheet')
+                    help='report subject overlap instead of stopping (for networks trained on per-scan '
+                         'splits, e.g. published_networks.csv); the overlap is listed in the checks sheet')
     ap.add_argument('--python', default=sys.executable, help='interpreter that runs the evaluator')
     ap.add_argument('--use_gpu', type=str2bool, default=True)
     ap.add_argument('--summarize_only', action='store_true',
                     help='do not run any inference; summarize the predictions files that exist')
     ap.add_argument('--overwrite', action='store_true',
-                    help='recompute predictions that already exist (the evaluator moves the old file '
-                         'to previous_versions/)')
+                    help='recompute predictions that already exist (the evaluator moves the existing '
+                         'file to previous_versions/)')
     ap.add_argument('--dry_run', action='store_true',
                     help='run the checks and print what would be evaluated, with a time estimate')
     ap.add_argument('--allow_incomplete', action='store_true',
@@ -218,7 +217,7 @@ def check_networks(table, needed, log_dir, require_model):
             continue
         spec = NETWORK_TYPES[net]
         got = OrderedDict([
-            ('model_name', str(cfg.get('model_name') or 'resnet').lower()),   # old runs: missing = resnet
+            ('model_name', str(cfg.get('model_name') or 'resnet').lower()),   # missing = resnet
             ('num_classes', int(cfg.get('num_classes', -1))),
             ('opt_only', str2bool(cfg.get('opt_only', False))),
             ('pos_only', str2bool(cfg.get('pos_only', False))),
@@ -361,9 +360,9 @@ def check_cohorts(configs, archs, subopt_list, splits_root, subject_csv, require
                     problems.append('run of %s %s fold %d has %d Suboptimal-only scans in its %s list, '
                                     'e.g. %s' % (key[0], key[1], key[2], len(both), which, sorted(both)[0]))
 
-    # subject overlap stops the run unless it is explicitly allowed (published networks)
+    # subject overlap stops the run unless it is explicitly allowed (networks trained on per-scan splits)
     flag = notes if allow_overlap else problems
-    hint = '' if allow_overlap else ' (--allow_subject_overlap only for networks trained on the published splits)'
+    hint = '' if allow_overlap else ' (--allow_subject_overlap only for networks trained on per-scan splits)'
     if not subject_csv:
         flag.append('subject overlap NOT checked: no --subject_csv' + hint)
     elif not os.path.exists(subject_csv):
@@ -426,8 +425,8 @@ def run_jobs(args, section, jobs, configs, expected):
     """Run every job whose predictions file is missing (or all, with --overwrite)."""
     with open(EVALUATOR_FILE) as fh:
         if '--shortlist_size' not in fh.read():
-            raise SystemExit('%s has no --shortlist_size option: pull the latest repository code '
-                             '(the "checking shortlist sizes" commit) first.' % EVALUATOR_FILE)
+            raise SystemExit('%s has no --shortlist_size option: update it to the current repository '
+                             'version first.' % EVALUATOR_FILE)
     for p, what in ((args.scan_dir, '--scan_dir'), (args.labels_path, '--labels_path'),
                     (args.subopt_list, '--subopt_list')):
         if not os.path.exists(p):
@@ -508,8 +507,8 @@ def prepare(args, section, methods, default_cohorts=COHORTS):
                                                args.subject_csv, required=running,
                                                allow_overlap=args.allow_subject_overlap)
     problems += cproblems
-    # which OptNet definition the table holds: trained with irrelevant frames as negatives (the published
-    # runs; config without exclude_irrelevant) or on relevant frames only.  Never mixed in one table.
+    # which OptNet definition the table holds: trained with irrelevant frames as negatives (the default;
+    # also when the config has no exclude_irrelevant) or on relevant frames only.  Never mixed in one table.
     optnet_modes = sorted({str2bool(cfg.get('exclude_irrelevant', False))
                            for (arch, net, fold), cfg in configs.items() if net == 'optnet'})
     if len(optnet_modes) > 1:
@@ -518,7 +517,7 @@ def prepare(args, section, methods, default_cohorts=COHORTS):
     elif optnet_modes:
         notes.append('OptNet trained on %s' % ('relevant frames only (optimal vs suboptimal)' if optnet_modes[0]
                                                else 'all frames, irrelevant counted with suboptimal '
-                                                    '(published definition)'))
+                                                    '(default definition)'))
     print('== %s ==' % section)
     for n in notes:
         print('  ' + n)
@@ -552,8 +551,8 @@ def read_top_sheet(path):
 def collect(jobs, expected, subject_csv=None):
     """Per-fold means and per-scan rows for every job, with coverage checks.
 
-    Every metric is averaged over the scans of a fold first and then over the folds, which is
-    how summarize_results.py aggregated the published numbers; the SD is over the fold means."""
+    Every metric is averaged over the scans of a fold first and then over the folds; the SD is
+    over the fold means."""
     subj = subject_map(subject_csv) if subject_csv and os.path.exists(subject_csv) else None
     folds, scans, runs, checks = [], [], [], []
     for j in jobs:

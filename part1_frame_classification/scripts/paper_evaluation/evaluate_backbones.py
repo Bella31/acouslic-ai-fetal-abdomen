@@ -1,9 +1,8 @@
 """
 Section: backbone ablation.
 
-Reproduces the Supplement's ablation tables (tab:ablation_opt_supp and tab:ablation_subopt_supp)
-and the backbone paragraph of the Results: One-step, Opt-only and Two-step on four backbones -
-DenseNet, EfficientNet, ResNet and ConvNeXt.
+Reproduces the Supplement's backbone ablation tables and the backbone comparison in the Results:
+One-step, Opt-only and Two-step on four backbones - DenseNet, EfficientNet, ResNet and ConvNeXt.
 
     Optimal-included   top-1/3/5 accuracy, WFSS@1/3/5, inference time (s per scan)
     Suboptimal-only    top-1/3/5 accuracy, inference time
@@ -14,7 +13,7 @@ reuse the main comparison's predictions files.
     python -m part1_frame_classification.scripts.paper_evaluation.evaluate_backbones \
         --networks <subject_disjoint_manifest.csv>
 
-    # while the ConvNeXt networks are still training
+    # a subset of the backbones
     ... --archs densenet efficientnet resnet
 
 Writes backbones.xlsx in --out_dir.

@@ -109,7 +109,7 @@ if __name__ == "__main__":
                 shortlist_size, fold, first, second, second, second, shortlist_size))
     lines.append('')
 
-    lines.append('## The other method pairs in evaluate_multiple.py')
+    lines.append('## The other method pairs')
     lines.append('')
     lines.append('Not run by default, listed so the pairing above can be compared with them.')
     lines.append('')

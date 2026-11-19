@@ -1,8 +1,8 @@
 """
 Section: sensitivity to the candidate shortlist size K.
 
-Reproduces the manuscript's Table 2 (tab:shortlist_sensitivity): the two-step method with RelNet
-shortlists of K = 3, 5 and 10 frames re-ranked by OptNet, on the DenseNet backbone.
+Reproduces the paper's Table 2: the two-step method with RelNet shortlists of K = 3, 5 and 10
+frames re-ranked by OptNet, on the DenseNet backbone.
 
     Coverage   share of scans whose shortlist holds at least one target frame (optimal for
                Optimal-included scans, suboptimal for Suboptimal-only scans).  Re-ranking does

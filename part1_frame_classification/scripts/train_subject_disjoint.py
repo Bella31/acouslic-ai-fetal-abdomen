@@ -1,20 +1,23 @@
 """
-Retrain the frame-selection networks on subject-disjoint cross-validation splits.
+Train the frame-selection networks on subject-disjoint cross-validation splits.
 
 Why: the 300 ACOUSLIC-AI development scans come from 281 subjects; 19 subjects were scanned twice.
-The published folds were split by scan, so a subject could have one scan in training and the other
-in validation or test. The corrected folds keep every test set exactly as published and withhold the
+The original folds are split by scan, so a subject can have one scan in training and the other
+in validation or test. The corrected folds keep every test set unchanged and withhold the
 7-10 scans per fold that share a subject with an evaluated scan or with the fold's validation set
 (data_preparation/make_subject_disjoint_splits.py).
 
+Reference runs: the networks trained on the original per-scan splits (their subjects overlap between
+training and test), listed in paper_evaluation/published_networks.csv.
+
 Steps, in order:
   1. split lists  --make_splits writes the corrected split lists. Existing lists are always checked
-                  against what the split script produces now; lists from an older version stop the run.
+                  against what the split script produces now; lists that differ stop the run.
   2. frames       --extract_frames extracts the frame images for those lists, each family from its own
                   balanced CSV.
   3. frame check  the extracted images must match the original extraction file for file (catches
                   leftover images of withheld scans and a wrong balanced CSV).
-  4. settings     every training setting is compared with the config.json of the published runs of
+  4. settings     every training setting is compared with the config.json of the reference runs of
                   the same backbone and network. Any difference stops the run.
   5. training     every requested network that is not yet in the manifest is trained, and each finished
                   run is added to the manifest (the evaluation scripts read it). Finished runs are
@@ -23,12 +26,12 @@ Steps, in order:
 Networks:
   relnet      relevant vs irrelevant (One-step, and stage 1 of Two-step)
   optnet      optimal vs not optimal: suboptimal and irrelevant frames together form the negative
-              class, as in the published runs (stage 2 of Two-step)
+              class (stage 2 of Two-step)
   optonly     optimal vs everything else, on the opt_no_subopt family (Opt-only)
-  threeclass  irrelevant / optimal / suboptimal (Three-class; DenseNet only in the paper)
+  threeclass  irrelevant / optimal / suboptimal (Three-class; DenseNet only)
 Two-step (relevant) and the shortlist sizes K reuse relnet + optnet, so they need no training.
 
-Usage, from the repository root (the default paths are the GPU machine's; see --help):
+Usage, from the repository root (default paths are set at the top of this file; see --help):
 
   # first time: split lists, frames, checks, then the DenseNet networks (20 networks, about 8.5 h)
   nohup python part1_frame_classification/scripts/train_subject_disjoint.py --make_splits \
@@ -57,7 +60,7 @@ GPU_SCANS = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/acouslic-ai-train-se
 PUBLISHED = os.path.join(REPO_ROOT, 'part1_frame_classification', 'scripts', 'paper_evaluation',
                          'published_networks.csv')
 
-# training settings, copied from the config.json of the published runs (checked in step 4)
+# training settings, the same as in the config.json of the reference runs (checked in step 4)
 SETTINGS = {'epochs': 50, 'batch_size': 32, 'lr': 3e-4, 'weight_decay': 1e-5,
             'patience': 20, 'min_epoch': 10, 'loss': 'CE'}
 
@@ -68,7 +71,7 @@ NETWORKS = {
     'threeclass': {'family': 'opt_using_subopt', 'num_classes': 3, 'opt_only': False, 'pos_only': False},
 }
 
-# minutes per network on the GPU machine, for the opt_using_subopt and opt_no_subopt families
+# estimated training minutes per network, for the opt_using_subopt and opt_no_subopt families
 MINUTES = {'densenet': (28, 18), 'resnet': (27, 20), 'efficientnet': (58, 38), 'convnext': (195, 125)}
 
 MANIFEST_COLUMNS = ['run_dir', 'arch', 'network', 'fold', 'data_dir', 'started', 'finished', 'seconds']
@@ -162,7 +165,7 @@ def step3_check_frames(args, families, original, corrected):
 
 
 def read_threeclass_loss(args):
-    """The loss of the published three-class runs, unless --threeclass_loss is given."""
+    """The loss of the reference three-class runs, unless --threeclass_loss is given."""
     if args.threeclass_loss:
         return args.threeclass_loss
     result = subprocess.run(
@@ -171,13 +174,13 @@ def read_threeclass_loss(args):
         cwd=REPO_ROOT, stdout=subprocess.PIPE, universal_newlines=True)
     loss = result.stdout.strip()
     if result.returncode != 0 or not loss:
-        stop('could not read the loss of the published three-class runs in %s. Give --threeclass_loss.'
+        stop('could not read the loss of the reference three-class runs in %s. Give --threeclass_loss.'
              % args.log_dir)
     return loss
 
 
 def step4_compare_settings(args, threeclass_loss):
-    say('\n=== 4. training settings vs the published runs ===')
+    say('\n=== 4. training settings vs the reference runs ===')
     command = ['--published', PUBLISHED, '--log_dir', args.log_dir,
                '--archs'] + args.archs + ['--nets'] + args.nets + [
                '--epochs', SETTINGS['epochs'], '--batch_size', SETTINGS['batch_size'], '--lr', SETTINGS['lr'],
@@ -186,9 +189,9 @@ def step4_compare_settings(args, threeclass_loss):
     if threeclass_loss:
         command += ['--threeclass_loss', threeclass_loss]
     if run_module('check_against_published_configs', *command) != 0:
-        stop('the training settings differ from the published runs (see above)')
+        stop('the training settings differ from the reference runs (see above)')
     if 'optnet' in args.nets:
-        say('OptNet: optimal vs not optimal (suboptimal + irrelevant), as in the published runs')
+        say('OptNet: optimal vs not optimal (suboptimal + irrelevant)')
 
 
 def latest_run_folder(log_dir):
@@ -253,7 +256,7 @@ def step5_train(args, corrected, threeclass_loss):
 # ---------------------------------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='Retrain the networks on subject-disjoint splits.')
+    parser = argparse.ArgumentParser(description='Train the networks on subject-disjoint splits.')
     parser.add_argument('--archs', nargs='+', default=['densenet'], choices=sorted(MINUTES),
                         help='default: densenet')
     parser.add_argument('--nets', nargs='+', default=['relnet', 'optnet', 'optonly'], choices=sorted(NETWORKS),
@@ -265,12 +268,12 @@ def main():
                         help='run the checks and print the plan; extract and train nothing')
     parser.add_argument('--out', default=GPU_OUT,
                         help='folder with the split families, the subject table and the balanced CSVs; '
-                             'default: the GPU machine output folder')
-    parser.add_argument('--scan_dir', default=GPU_SCANS, help='the .mha scans (step 2); default: the GPU machine')
+                             'default: %(default)s')
+    parser.add_argument('--scan_dir', default=GPU_SCANS, help='the .mha scans (step 2); default: %(default)s')
     parser.add_argument('--subject_csv', help='default: <out>/fetal_abdominal_circumferences_per_sweep.csv')
     parser.add_argument('--log_dir', help='network run folders; default: <out>/network')
     parser.add_argument('--manifest', help='default: <log_dir>/subject_disjoint_manifest.csv')
-    parser.add_argument('--threeclass_loss', help='default: read from the published three-class runs')
+    parser.add_argument('--threeclass_loss', help='default: read from the reference three-class runs')
     args = parser.parse_args()
     args.subject_csv = args.subject_csv or os.path.join(args.out, 'fetal_abdominal_circumferences_per_sweep.csv')
     args.log_dir = args.log_dir or os.path.join(args.out, 'network')

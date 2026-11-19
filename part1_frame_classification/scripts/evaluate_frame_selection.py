@@ -320,7 +320,7 @@ def calc_topk_indices(idx_relevant, probs2, scores_base_network, threshold, topk
     ranked = idx_relevant[order]
     best_idx2 = int(order[0])
     if max_score < threshold:
-        # only with --threshold > 0 (the paper uses 0): the top-1 frame is then chosen by class 0
+        # only with --threshold > 0 (default 0): the top-1 frame is then chosen by class 0
         print(f"maximum score is {max_score}, which is smaller than threshold {threshold}")
         max_sub_scores = probs2[:, 0]
         best_idx2 = int(np.argmax(max_sub_scores))

@@ -3,8 +3,8 @@ Make the saved cross-validation splits subject-disjoint, without redesigning the
 
 WHY
     The ACOUSLIC-AI public development set is 300 cases from 281 subjects: 19 subjects were
-    examined twice.  The split code keys on the scan filename ("Filename" in the balanced CSV),
-    so it cannot know that, and in the saved folds 11 of the 140 evaluated Optimal-included scans
+    examined twice.  The per-scan split keys on the scan filename ("Filename" in the balanced CSV),
+    so it does not see this, and in the saved folds 11 of the 140 evaluated Optimal-included scans
     have the same subject's other scan in their own fold's training or validation set.  Six of
     the 113 Suboptimal-only scans are in the same position.
 
@@ -18,8 +18,8 @@ WHAT THIS DOES
     Suboptimal-only cohort (which every fold model is evaluated on).
 
     Test sets are never touched.  The Suboptimal-only cohort is never touched.  So the corrected
-    folds evaluate exactly the same 140 + 113 scans as the published ones, and the only change is
-    that a handful of training scans are withheld - typically 6 to 9 of 159 per fold.
+    folds evaluate exactly the same 140 + 113 scans as the original ones, and the only difference is
+    that a few training and validation scans are withheld: 7 to 10 per fold.
 
     That is the point of doing it this way.  Excluding contaminated scans from the EVALUATION
     instead would shrink the test cohort to a subset selected on "subject was examined once",
@@ -28,7 +28,7 @@ WHAT THIS DOES
 
     The original fold assignment is otherwise preserved exactly, so this is a controlled
     correction of the existing design, not a new random split.  That matters because the shuffle
-    in extract_frames_from_mha_cross_valid.py is unseeded and the published folds survive only as
+    in extract_frames_from_mha_cross_valid.py is unseeded and the original folds exist only as
     the saved *_ids.txt files.
 
 TRAIN/VALIDATION OVERLAP
@@ -37,7 +37,7 @@ TRAIN/VALIDATION OVERLAP
     too, by withholding that subject's TRAINING scans: validation holds only about 9 scans per fold
     and training about 150, so the validation set is kept whole.  After this, training, validation
     and test are subject-disjoint within every fold.  --keep_train_valid_overlap leaves this overlap
-    in place (the first version of this script did).
+    in place.
 
 AFTER RUNNING THIS
     The output has the same layout the rest of the pipeline expects,
@@ -70,7 +70,7 @@ USAGE
     an already-corrected tree changes nothing.
 
     --check_only compares an existing --output with what this script produces now and verifies it,
-    writing nothing; it exits 1 if they differ (e.g. lists made by an earlier version).
+    writing nothing; it exits 1 if they differ.
 """
 
 import argparse
@@ -299,7 +299,7 @@ def main():
             print('CHECK FAILED for %s' % args.output)
             for p in problems:
                 print('  ' + p)
-            print('These lists were probably made by an earlier version of this script. Move the folder '
+            print('These lists do not match what this script produces. Move the folder '
                   'aside (and any frames extracted into it) and generate it again.')
             sys.exit(1)
         print('CHECK OK: %s matches this script and is subject-disjoint%s'

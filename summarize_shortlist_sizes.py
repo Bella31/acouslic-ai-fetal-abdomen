@@ -4,9 +4,9 @@ Summarize the shortlist size sweep produced by evaluate_shortlist_sizes.py.
 Reads predictions_{id}_k{K}.xlsx and predictions_{id}_subopt_k{K}.xlsx from the results folder of every
 second network and writes one workbook comparing the shortlist sizes.
 
-Each metric is first averaged over the scans of a fold and then over the five folds, which is how
-summarize_results.py aggregates, so the numbers are comparable with overall_summary.xlsx. The standard
-deviation is taken over the five fold means.
+Each metric is first averaged over the scans of a fold and then over the five folds, the same aggregation
+as overall_summary.xlsx written by summarize_results.py, so the numbers are directly comparable. The
+standard deviation is taken over the five fold means.
 
 The comparison between shortlist sizes is only meaningful when every size was evaluated on exactly the same
 folds and the same scans, so that is checked before anything is averaged. A size that is missing a fold, or

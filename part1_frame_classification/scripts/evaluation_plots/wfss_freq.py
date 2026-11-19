@@ -93,7 +93,7 @@ def build_algorithm_color_map(algorithms_present: List[str], cfg: WFSSPlotConfig
     algorithms = [a for a in preferred_order if a in algorithms_present] + \
                  [a for a in sorted(algorithms_present) if a not in preferred_order]
 
-    base = mpl.colormaps[cfg.colormap].colors  # tab10
+    base = plt.get_cmap(cfg.colormap).colors  # tab10 (works on old and new matplotlib)
 
     # Force the first 5 to match the main-figure look (pink = tab10[6])
     first5 = [base[0], base[1], base[2], base[3], base[6]]
@@ -107,8 +107,9 @@ def build_algorithm_color_map(algorithms_present: List[str], cfg: WFSSPlotConfig
     return {alg: palette[i] for i, alg in enumerate(algorithms)}
 
 
-def plot_wfss_three_panels(cfg: WFSSPlotConfig, savepath: str | None = None) -> None:
-    data = load_all_sheets(cfg)
+def plot_wfss_three_panels(cfg: WFSSPlotConfig, savepath: str | None = None, data: pd.DataFrame | None = None) -> None:
+    """data: per-scan table with cfg.algorithm_col and the WFSS columns; default: read cfg.excel_path."""
+    data = load_all_sheets(cfg) if data is None else data
 
     titles = list(cfg.wfss_cols.keys())
     cols = list(cfg.wfss_cols.values())
@@ -135,15 +136,13 @@ def plot_wfss_three_panels(cfg: WFSSPlotConfig, savepath: str | None = None) -> 
     ax_leg = fig.add_subplot(gs[0])
     ax_leg.axis("off")
 
+    # the three panels share x and y
+    first = fig.add_subplot(gs[1])
     axes = [
-        fig.add_subplot(gs[1]),
-        fig.add_subplot(gs[2], sharex=None, sharey=None),
-        fig.add_subplot(gs[3], sharex=None, sharey=None),
+        first,
+        fig.add_subplot(gs[2], sharex=first, sharey=first),
+        fig.add_subplot(gs[3], sharex=first, sharey=first),
     ]
-
-    # share x/y across the three panels
-    axes[1].sharex(axes[0]); axes[2].sharex(axes[0])
-    axes[1].sharey(axes[0]); axes[2].sharey(axes[0])
 
     preferred_order = [
         "One-step",

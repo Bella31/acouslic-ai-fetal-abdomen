@@ -1,7 +1,7 @@
 """
 Section: frame selection results - the main comparison of supervision strategies.
 
-Reproduces the manuscript's main results table (tab:selection_results) and Figure top_results:
+Reproduces the paper's main results table and Fig. 2:
 top-1/3/5 accuracy on the Optimal-included and Suboptimal-only datasets, and WFSS@1/3/5 on the
 Optimal-included dataset, for the five compared methods on the DenseNet backbone:
 

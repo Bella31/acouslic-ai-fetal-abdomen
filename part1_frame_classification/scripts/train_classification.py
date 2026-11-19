@@ -68,10 +68,10 @@ def make_binary_dataset(root, split, transform, name_to_new, pos_only, exclude_i
 
     # The frame folders hold all three classes (irrelevant, optimal, suboptimal). NAME_TO_NEW_POS has no
     # entry for 'irrelevant', so with pos_only those frames keep their ImageFolder index, which is 0: OptNet
-    # learns optimal (1) vs not optimal (0), suboptimal and irrelevant together. This is intended and is how
-    # the published OptNet runs were trained: the shortlist OptNet re-ranks at inference can contain
-    # irrelevant frames, and they must rank as not optimal. exclude_irrelevant (off by default) would drop
-    # them, giving a network that has only seen optimal and suboptimal frames.
+    # learns optimal (1) vs not optimal (0), suboptimal and irrelevant together. This is intended: the
+    # shortlist OptNet re-ranks at inference can contain irrelevant frames, and they must rank as not
+    # optimal. exclude_irrelevant (off by default) drops them, giving a network that has only seen optimal
+    # and suboptimal frames.
     if exclude_irrelevant:
         drop_idx = ds.class_to_idx.get('irrelevant')
         if drop_idx is not None:
@@ -348,7 +348,7 @@ if __name__ == "__main__":
     parser.add_argument("--exclude_irrelevant", type=str2bool, default=False,
                         help="with --pos_only: drop the irrelevant frames, so the network is trained on optimal vs "
                              "suboptimal frames only. Without it, irrelevant frames are trained as the suboptimal "
-                             "class, as in the published OptNet runs")
+                             "(not optimal) class")
     parser.add_argument("--num_classes", type=int, default=3, help="patience")
     parser.add_argument("--loss", type=str, default="focal", help="patience")
     parser.add_argument("--model_name", type=str, default="resnet", help="model name")

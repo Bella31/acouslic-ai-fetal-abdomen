@@ -5,9 +5,8 @@ For every shortlist size the first network scores all frames of a scan, its top 
 second network, and the second network re-ranks them. K is the quantity under study here, so a separate
 results file is written per K and per fold.
 
-Network pairing follows evaluate_multiple.py: the first network is the one-step network and the second
-network is the second stage of the two-step approach, matched by fold. Results are written into the results
-folder of the second network, which is where the existing runs put them.
+The first network is the one-step network and the second network is the second stage of the two-step
+approach, matched by fold. Results are written into the results folder of the second network.
 
 Usage:
     python evaluate_shortlist_sizes.py --scan_dir <stacked_fetal_ultrasound> --labels_path <labels.csv> \
@@ -35,7 +34,7 @@ DEFAULT_SCAN_DIR = ('/media/bella/8A1D-C0A6/Academy/Home_ultrasound/acouslic-ai-
 DEFAULT_LABELS_PATH = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/labels.csv'
 DEFAULT_SUBOPT_CASES = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output/subopt_cases.txt'
 
-# method name -> (first network per fold, second network per fold), taken from evaluate_multiple.py.
+# method name -> (first network per fold, second network per fold).
 # The first network is the one-step network, the second one is the second stage of the two-step approach.
 METHODS = {
     'two-step (ours)':        ([196, 197, 198, 199, 200], [201, 202, 203, 204, 205]),
@@ -80,7 +79,7 @@ def get_test_scans_path(model2_path):
 def build_command(model_path, model2_path, scan_dir, labels_path, results_path, num_classes, threshold,
                   shortlist_size, topk_list, test_scans_path=None, test_scans_lst_path=None, rel_only=False,
                   use_gpu=True, overwrite=False):
-    #paths are quoted because the project folders hold spaces
+    #paths are quoted because they may contain spaces
     q = shlex.quote
     args = (
             '--model ' + q(model_path) + ' --model2 ' + q(model2_path) + ' --scan_dir ' + q(scan_dir) +

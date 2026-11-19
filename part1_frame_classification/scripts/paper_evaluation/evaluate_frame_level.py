@@ -1,8 +1,8 @@
 """
 Section: frame-level classification - precision, recall and F1.
 
-Reproduces the manuscript's F1 table (tab:f1_results), the precision-recall scatter (fig:pr_scatter)
-and the Supplement's three-class confusion matrices, for the DenseNet backbone:
+Reproduces the paper's F1 table, the precision-recall scatter (Fig. 3) and the Supplement's
+three-class confusion matrices, for the DenseNet backbone:
 
     optimal vs non-optimal       Optimal-included dataset
     relevant vs irrelevant       both datasets (optimal and suboptimal frames grouped as relevant)
@@ -11,17 +11,16 @@ The proposed method enters as "Two-step (relevant)", which forwards every frame 
 relevant to OptNet: the standard two-step method only re-labels the five shortlisted frames, so it
 has no meaningful scan-wide recall (it is still listed, for completeness).
 
-Aggregation follows summarize_results.py, which produced the published table:
+Aggregation:
   - Optimal-included: the per-scan 3x3 confusion matrices are summed over all scans of all folds,
     merged to the 2-class task, and precision/recall/F1 computed once from the pooled counts
   - Suboptimal-only: per-scan precision/recall/F1 are averaged within each fold model and then
     over the five models
 
-F1 of a scan with target frames but no true positive is 0.  Prediction files written before this
-was fixed in evaluate_frame_selection.py hold an empty F1 there, and a mean that skips those scans
-is too high (in the published DenseNet files: Opt-only Suboptimal-only F1 0.471 -> 0.434).  So the
-per-scan F1 is recomputed here from the per-scan precision and recall, the same for old and new
-files; the checks sheet says how many scans this affected.
+F1 of a scan with target frames but no true positive is 0, not undefined.  A predictions file may
+leave F1 empty there, and a mean that skips those scans is too high, so the per-scan F1 is
+recomputed here from the per-scan precision and recall; the checks sheet says how many scans this
+affected.
 
 These come from the same predictions files as the main comparison, so after
 evaluate_main_comparison.py has run this needs no inference at all.

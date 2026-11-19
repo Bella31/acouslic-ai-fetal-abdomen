@@ -110,7 +110,14 @@ def _set_limits_from_data(ax, x_all, y_all, pad=0.05, hard=(0.0, 1.0)):
 def plot_side_by_side(excel_path):
     df_rel = pd.read_excel(excel_path, sheet_name="rel")
     df_opt = pd.read_excel(excel_path, sheet_name="opt")
+    plot_pr(df_rel, df_opt)
+    plt.show()
 
+
+def plot_pr(df_rel, df_opt):
+    """Draw the figure from the two tables (columns as in the rel and opt sheets); returns the figure."""
+    df_rel = df_rel.copy()
+    df_opt = df_opt.copy()
     df_rel.columns = df_rel.columns.str.strip()
     df_opt.columns = df_opt.columns.str.strip()
     df_rel["method"] = df_rel["method"].astype(str).str.strip()
@@ -212,7 +219,7 @@ def plot_side_by_side(excel_path):
     )
 
     fig.tight_layout()
-    plt.show()
+    return fig
 
 
 if __name__ == "__main__":
