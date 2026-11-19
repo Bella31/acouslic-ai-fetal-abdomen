@@ -10,7 +10,7 @@ to one Excel workbook.
 | `evaluate_frame_level.py` | Frame-level classification: F1 table, precision–recall, three-class confusion matrices (Supplement) | `frame_level.xlsx` |
 | `evaluate_shortlist_size.py` | Shortlist size K = 3, 5, 10: coverage, top-1/3, WFSS@1/3 (Table 2) | `shortlist_size.xlsx` |
 | `evaluate_backbones.py` | Backbone ablation: One-step, Opt-only and Two-step on DenseNet, EfficientNet, ResNet, ConvNeXt (Supplement tables) | `backbones.xlsx` |
-| `run_paper_evaluation.sh` | runs the four in order | |
+| `run_paper_evaluation.py` | runs the sections in order | |
 
 The statistical comparisons (McNemar, bootstrap, Holm) are not part of these scripts. Every
 workbook has a `per_scan` sheet (one row per scan, method and fold model, with `subject_id` when
@@ -55,7 +55,7 @@ are the paths on the GPU machine.
   validation scans and the scans it is evaluated on, or between its training and validation scans,
   and every scan needs a subject_id. Any of these stops the run. The published networks were split
   per scan and do share subjects; reproduce them with `--allow_subject_overlap`
-  (`ALLOW_SUBJECT_OVERLAP=1` for the shell script), which lists the overlap in the checks sheet instead
+  (also an option of `run_paper_evaluation.py`), which lists the overlap in the checks sheet instead
 
 When a check fails, nothing runs. When predictions are missing, a fold covers the wrong scans, or a
 metric is missing for some scans of a fold (so its mean would use fewer scans than the other
@@ -110,24 +110,22 @@ published F1 table.
 From the repository root:
 
 ```bash
-# everything, for the subject-disjoint networks
-nohup ./part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.sh > eval.log 2>&1 &
+# DenseNet sections for the subject-disjoint networks (main table, F1 table, Table 2)
+python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections main_comparison frame_level shortlist_size --dry_run   # plan and time estimate
+nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections main_comparison frame_level shortlist_size > <output folder>/eval_densenet.log 2>&1 &
+
+# backbone tables, once all backbones are trained
+nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections backbones > <output folder>/eval_backbones.log 2>&1 &
 
 # the published networks (their splits share subjects, so the overlap is reported, not blocking)
-NETWORKS=part1_frame_classification/scripts/paper_evaluation/published_networks.csv ALLOW_SUBJECT_OVERLAP=1 \
-    ./part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.sh
-
-# one section
-python -m part1_frame_classification.scripts.paper_evaluation.evaluate_shortlist_size \
-    --networks <network folder>/subject_disjoint_manifest.csv
-
-# what would run, with a time estimate
-DRY_RUN=1 ./part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.sh
+python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --networks part1_frame_classification/scripts/paper_evaluation/published_networks.csv --allow_subject_overlap
 
 # tables only, from predictions that already exist (no GPU, no scans needed)
-python -m part1_frame_classification.scripts.paper_evaluation.evaluate_main_comparison \
-    --networks ... --summarize_only
+python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --summarize_only
 ```
+
+`--help` lists the paths; their defaults are the GPU machine's. Each section can also be run on its own,
+e.g. `python -m part1_frame_classification.scripts.paper_evaluation.evaluate_shortlist_size --networks ...`.
 
 Approximate inference time per scan: about 3 s for DenseNet, ResNet and EfficientNet, and 9 s for
 ConvNeXt. Each fold model sees 28 Optimal-included and 113 Suboptimal-only scans.
