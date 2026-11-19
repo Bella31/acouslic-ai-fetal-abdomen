@@ -147,14 +147,23 @@ def calc_per_slice_precision_recall(probs, optimal_frames, suboptimal_frames, pr
     return gt, predictions, precision_opt_only, recall_opt_only, f1_opt_only, precision_opt_subopt, recall_opt_subopt, f1_opt_subopt
 
 
+def rank_frames(scores):
+    """
+    Positions of the frames sorted from the highest score down.
+    Frames with exactly the same score (common at 1.000) keep the order they were given in, so the
+    first frame of the ranking is the frame np.argmax picks. The top-1 frame is always taken from this
+    ranking, so it is also the first frame of every top-k list.
+    """
+    return np.argsort(-np.asarray(scores, dtype=float), kind='mergesort')
+
+
 def get_top_k_indices(scores, k):
     """
-    Indices of the k highest scores, sorted from the best score down.
+    Indices of the k highest scores, sorted from the best score down (ties: see rank_frames).
     k is clipped to the number of available frames.
     """
     k = int(min(k, len(scores)))
-    idx = np.argpartition(scores, -k)[-k:]
-    return idx[np.argsort(scores[idx])[::-1]]
+    return rank_frames(scores)[:k]
 
 
 def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df, threshold=0.0, device=None,
@@ -233,7 +242,7 @@ def process_scans(scan_dir, model, model2, transform, val_scan_names, labels_df,
         else:
             topk_indices = {k: get_top_k_indices(scores, k) for k in topk_list}
             max_score = np.max(scores)
-            best_idx = int(np.argmax(scores))
+            best_idx = int(get_top_k_indices(scores, 1)[0])  # = topk_indices[k][0] for every k
 
         end = time.perf_counter()
         running_time = end-start
@@ -305,15 +314,19 @@ def calc_topk_indices(idx_relevant, probs2, scores_base_network, threshold, topk
     num_rel = len(probs2)
     scores = probs2[:, 1]  # class 1- optimal
     max_score = np.max(scores)
-    best_idx2 = int(np.argmax(scores))
+    # OptNet ranking; tied frames keep the order they reached OptNet in (RelNet's ranking for the
+    # shortlist), and the top-1 frame is the first frame of this ranking
+    order = rank_frames(scores)
+    ranked = idx_relevant[order]
+    best_idx2 = int(order[0])
     if max_score < threshold:
+        # only with --threshold > 0 (the paper uses 0): the top-1 frame is then chosen by class 0
         print(f"maximum score is {max_score}, which is smaller than threshold {threshold}")
         max_sub_scores = probs2[:, 0]
         best_idx2 = int(np.argmax(max_sub_scores))
     best_idx = int(idx_relevant[best_idx2])
-    ranked = idx_relevant[np.argsort(scores)[::-1]]
     #frames of the first network, best first, used only to fill up a shortlist shorter than k
-    padding = np.argsort(scores_base_network)[::-1]
+    padding = rank_frames(scores_base_network)
     topk_indices = {}
     for k in topk_list:
         selected = ranked[:k]

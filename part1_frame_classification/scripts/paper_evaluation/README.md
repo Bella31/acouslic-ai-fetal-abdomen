@@ -69,6 +69,12 @@ methods), no tables are written. `--allow_incomplete` writes them anyway, named 
   frame-level predictions stay RelNet's. The per-scan columns `second_stage_candidates` and
   `no_relevant_frame` show where this happened. (In the published runs every scan had at least five
   relevant frames, so neither rule changes a published number.)
+- **Ties.** Frames with exactly the same score (common at 1.000) are ranked in the order they were
+  given: by frame number for RelNet, Opt-only and Three-class, and in RelNet's order for OptNet. The
+  top-1 frame is always the first frame of the ranking, so it is also first in every top-k list.
+  (Before this rule, top-1 took the first tied frame and the top-k lists the last, so in 18 of the
+  9,499 published selections the top-1 frame was not first in its own top-k list, once not even in
+  the top 3.)
 - **F1** of a scan with target frames but no true positive is 0, not undefined. Prediction files
   written before this fix leave it empty, and a mean that skips those scans is too high. The
   frame-level script therefore recomputes the per-scan F1 from precision and recall, for old and
