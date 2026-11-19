@@ -7,7 +7,7 @@ to one Excel workbook.
 | Script | Paper section | Output |
 |---|---|---|
 | `evaluate_main_comparison.py` | Main results: accuracy (top-1/3/5) and WFSS for One-step, Opt-only, Three-class, Two-step and Two-step (relevant), DenseNet | `main_comparison.xlsx` |
-| `evaluate_statistics.py` | Two-step vs Opt-only tests: exact McNemar, bootstrap CIs and p-values, Holm (Supplement table, asterisks of the main table); also resampling subjects | `statistics.xlsx` |
+| `evaluate_statistics.py` | Two-step vs Opt-only tests: subject-clustered bootstrap CIs and p-values, Holm; scan-level sensitivity analysis (exact McNemar, bootstrap) | `statistics.xlsx` |
 | `evaluate_frame_level.py` | Frame-level classification: F1 table, precision–recall, three-class confusion matrices (Supplement) | `frame_level.xlsx` |
 | `make_figures.py` | Fig. 2, Fig. 3, Fig. S1 (three-class confusion matrices), Fig. S2 (WFSS distributions), drawn with the plotting functions in `evaluation_plots/` from `main_comparison.xlsx` and `frame_level.xlsx`; requires pandas >= 0.25 | `figures/` |
 | `evaluate_shortlist_size.py` | Shortlist size K = 3, 5, 10: coverage, top-1/3, WFSS@1/3 (Table 2) | `shortlist_size.xlsx` |
@@ -15,11 +15,14 @@ to one Excel workbook.
 | `run_paper_evaluation.py` | runs the sections in order | |
 
 `evaluate_statistics.py` reads the `per_scan` sheet of `main_comparison.xlsx` (one row per scan,
-method and fold model, with `subject_id`). Its `paper` sheet holds the four comparisons resampling
-scans, and its `by_subject` sheet repeats them resampling subjects, since some subjects contribute
-two scans. The resampling is seeded and drawn in a fixed order, so a given input always gives the
-same output. `--check_published` compares the `paper` sheet with the reference results of the
-networks in `published_networks.csv`.
+method and fold model, with `subject_id`). The main analysis, in the `subject_level` sheet, is a
+subject-clustered bootstrap: some subjects contribute two scans, so subjects are resampled with all
+of their scans, and the differences stay scan-weighted. The `scan_level` sheet is the sensitivity
+analysis, with scans treated as independent (exact McNemar test for Optimal-included Top-1). The
+`checks` sheet states whether both reach the same significance decisions. The resampling is seeded
+and drawn in a fixed order, so a given input always gives the same output. `--check_published`
+compares the `scan_level` sheet with the reference results of the networks in
+`published_networks.csv`.
 
 ## What the scripts need
 

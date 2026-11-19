@@ -4,28 +4,33 @@ Statistical comparison of Two-step and Opt-only (DenseNet, shortlist K = 5).
 Reads the per_scan sheet of main_comparison.xlsx (written by evaluate_main_comparison.py) and writes
 statistics.xlsx to the same folder.
 
-Four pre-specified comparisons, each as the difference Two-step minus Opt-only:
+Four pre-specified comparisons, each as the difference Two-step minus Opt-only: Optimal-included
+Top-1 and WFSS@1, and Suboptimal-only Top-1 and Top-3. The differences are scan-level means, as in
+the results tables. Every Suboptimal-only scan is evaluated by all five fold models, and its
+difference is first averaged over them.
+
+Main analysis (sheet subject_level): subject-clustered bootstrap. Some subjects were scanned twice
+and their two scans are not independent, so subjects are resampled, each with all of its scans, and
+the difference is recomputed over the scans of the drawn subjects. The estimate therefore stays
+scan-weighted. All four comparisons, Top-1 included, take their p-values from this bootstrap.
+
+Sensitivity analysis (sheet scan_level): each scan treated as independent.
   Optimal-included Top-1   exact McNemar test; 95% CI from a paired case bootstrap
   Optimal-included WFSS@1  paired case bootstrap
-  Suboptimal-only Top-1    scan-clustered bootstrap: each scan averaged over the five fold models
+  Suboptimal-only Top-1    scan-clustered bootstrap: scans resampled, each averaged over the folds
   Suboptimal-only Top-3    scan-clustered bootstrap
-Bootstrap: 100,000 resamples, seed 20260908, percentile 95% CI, two-sided p-value from the
-null-centred bootstrap distribution. The four p-values are Holm-adjusted; a comparison is
-significant at adjusted p < 0.01.
 
-The resampling is deterministic: one random generator, drawn in the order of the comparisons above,
-over units in a fixed order (fold, then scan). Bootstrap p-values are Monte Carlo estimates with a
-standard error of sqrt(p (1 - p) / 100,000).
+Both analyses: 100,000 resamples, seed 20260908, percentile 95% CI, two-sided p-value from the
+null-centred bootstrap distribution, Holm adjustment across the four comparisons, significance at
+adjusted p < 0.01. The checks sheet states whether the two analyses reach the same significance
+decisions.
 
-Sheets of statistics.xlsx:
-  paper       the four comparisons, resampling scans
-  by_subject  the same comparisons, resampling subjects instead of scans, because 19 of the 281
-              subjects were scanned twice and their two scans are not independent. Top-1 also takes
-              its p-value from this bootstrap, since the McNemar test assumes independent scans.
-  checks      input, settings, and any problem found while pairing the two methods
+The resampling is deterministic: a fixed seed, units in a fixed order (scans by fold, then scan;
+subjects sorted), and the comparisons drawn in the order above. Bootstrap p-values are Monte Carlo
+estimates with a standard error of sqrt(p (1 - p) / 100,000).
 
---check_published compares the paper sheet with the reference results of the networks listed in
-published_networks.csv (see check_published).
+--check_published compares the scan_level sheet with the reference results of the networks listed
+in published_networks.csv (see check_published).
 
 Usage, from the repository root:
   python -m part1_frame_classification.scripts.paper_evaluation.evaluate_statistics \
@@ -133,8 +138,7 @@ def load_pairs(workbook):
         return None, None, problems
     has_subjects = 'subject_id' in d.columns and d['subject_id'].notna().all()
     if not has_subjects:
-        problems.append('subject_id missing for some scans (run the evaluation with --subject_csv); '
-                        'the by_subject analysis is skipped')
+        problems.append('subject_id missing for some scans (run the evaluation with --subject_csv)')
 
     def table(method, cohort):
         t = d[(d['method'] == method) & (d['cohort'] == cohort)]
@@ -178,7 +182,8 @@ def load_pairs(workbook):
 # ------------------------------------------------------------------------------- analyses ---
 
 def scan_level(optimal, suboptimal):
-    """The four comparisons resampling scans (sheet paper); one generator, drawn in comparison order."""
+    """Sensitivity analysis, scans treated as independent (sheet scan_level); one generator, drawn in
+    comparison order."""
     rng = random.Random(SEED)
     d_top1 = [r['two_top1'] - r['base_top1'] for r in optimal]
     d_wfss = [r['two_wfss'] - r['base_wfss'] for r in optimal]
@@ -232,7 +237,7 @@ def subject_bootstrap(per_unit, rng):
 
 
 def subject_level(optimal, suboptimal):
-    """The four comparisons resampling subjects (sheet by_subject)."""
+    """Main analysis, subject-clustered bootstrap (sheet subject_level)."""
     rng = np.random.RandomState(SEED)
     rows = []
     for name, key in ((COMPARISONS[0], 'top1'), (COMPARISONS[1], 'wfss')):
@@ -266,12 +271,21 @@ def finish(rows, unit):
     return table[cols]
 
 
-def check_published(paper):
+def same_decisions(main, sensitivity):
+    """Whether the two analyses reach the same significance decision for every comparison."""
+    differ = [c for c, a, b in zip(main['Comparison'], main['Significant (p<0.01)'],
+                                   sensitivity['Significant (p<0.01)']) if a != b]
+    if not differ:
+        return 'yes: same significance decisions for all four comparisons'
+    return 'NO: the significance decision differs for ' + ', '.join(differ)
+
+
+def check_published(by_scan):
     """Compare the scan-level table with the reference results. Differences and 95% CIs must agree to
     3 decimals, the McNemar p-value exactly, the bootstrap p-values within 4 Monte Carlo standard
     errors, and the significance decisions must be the same. Returns the disagreements."""
     problems = []
-    for i, r in paper.iterrows():
+    for i, r in by_scan.iterrows():
         diff, low, high, p_holm = PUBLISHED_TABLE[i]
         got = (round(r['Difference'], 3), round(r['CI low'], 3), round(r['CI high'], 3))
         if got != (diff, low, high):
@@ -316,32 +330,32 @@ def main():
 
     say('reading %s' % workbook)
     optimal, suboptimal, problems = load_pairs(workbook)
-    hard = [p for p in problems if 'subject_id missing' not in p]
-    if hard or optimal is None:
-        say('ERROR: the two methods cannot be paired:\n  ' + '\n  '.join(problems))
+    if problems or optimal is None:
+        say('ERROR: the two methods cannot be paired by scan and subject:\n  ' + '\n  '.join(problems))
         sys.exit(1)
     say('%d Optimal-included scans, %d Suboptimal-only scans x %d fold models; %d bootstrap resamples'
         % (len(optimal), len(suboptimal), len(next(iter(suboptimal.values()))['two_top1']), B))
 
     t0 = time.time()
-    paper = scan_level(optimal, suboptimal)
-    by_subject = subject_level(optimal, suboptimal) if not problems else None
+    by_subject = subject_level(optimal, suboptimal)
+    by_scan = scan_level(optimal, suboptimal)
     say('computed in %.0f s' % (time.time() - t0))
+    agreement = same_decisions(by_subject, by_scan)
 
     pd.set_option('display.width', 250)
     show = ['Comparison', 'Two-step', 'Opt-only', 'Difference', 'CI low', 'CI high', 'p (Holm)', 'Significant (p<0.01)']
-    say('\nResampling scans:')
-    say(paper[show].round(4).to_string(index=False))
-    if by_subject is not None:
-        say('\nResampling subjects:')
-        say(by_subject[show].round(4).to_string(index=False))
+    say('\nMain analysis, subject-clustered bootstrap (sheet subject_level):')
+    say(by_subject[show].round(4).to_string(index=False))
+    say('\nSensitivity analysis, scans treated as independent (sheet scan_level):')
+    say(by_scan[show].round(4).to_string(index=False))
+    say('\nSame conclusions in both analyses: ' + agreement)
 
     checks = [('workbook', workbook), ('arch', ARCH), ('methods', '%s vs %s' % (TWO, BASE)),
               ('Optimal-included scans', len(optimal)), ('Suboptimal-only scans', len(suboptimal)),
-              ('bootstrap resamples', B), ('seed', SEED), ('significance', 'Holm-adjusted p < %g' % ALPHA)]
-    checks += [('problem', p) for p in problems]
+              ('bootstrap resamples', B), ('seed', SEED), ('significance', 'Holm-adjusted p < %g' % ALPHA),
+              ('same conclusions in both analyses', agreement)]
     if args.check_published:
-        mismatch = check_published(paper)
+        mismatch = check_published(by_scan)
         verdict = ('reproduced: differences, CIs and McNemar exactly, bootstrap p-values within resampling '
                    'noise, same significance decisions')
         checks.append(('reference results', verdict if not mismatch else '; '.join(mismatch)))
@@ -354,12 +368,11 @@ def main():
             os.makedirs(prev)
         shutil.move(out, os.path.join(prev, 'statistics_%s.xlsx' % time.strftime('%Y%m%d_%H%M%S')))
     with pd.ExcelWriter(out) as xw:
-        paper.to_excel(xw, sheet_name='paper', index=False)
-        if by_subject is not None:
-            by_subject.to_excel(xw, sheet_name='by_subject', index=False)
+        by_subject.to_excel(xw, sheet_name='subject_level', index=False)
+        by_scan.to_excel(xw, sheet_name='scan_level', index=False)
         pd.DataFrame(checks, columns=['item', 'value']).to_excel(xw, sheet_name='checks', index=False)
     say('\nwrote %s' % out)
-    if args.check_published and check_published(paper):
+    if args.check_published and check_published(by_scan):
         sys.exit(1)
 
 

@@ -2,7 +2,7 @@
 Run the evaluation sections of the paper, in order, for one set of trained networks.
 
   main_comparison   main results table and WFSS (DenseNet, five methods)
-  statistics        Two-step vs Opt-only tests (McNemar, bootstrap, Holm), from the main comparison
+  statistics        Two-step vs Opt-only tests (subject-clustered bootstrap, Holm), from the main comparison
   frame_level       F1 table, precision-recall, confusion matrices (reuses the predictions above)
   figures           Fig2, Fig3, FigureS1, FigureS2 from the two workbooks above (make_figures.py)
   shortlist_size    Table 2, shortlist sizes K = 3, 5, 10
