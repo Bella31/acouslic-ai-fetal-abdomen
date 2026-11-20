@@ -10,19 +10,22 @@ Run the evaluation sections of the paper, in order, for one set of trained netwo
 
 Each section runs only the evaluations whose prediction files are missing, then writes its workbook
 (by default to paper_evaluation_<networks table name>/ next to the networks table). A section that fails
-does not stop the next one; the script exits with status 1 at the end if any did. Running it again
-continues where it stopped.
+does not stop the next one, except that statistics and figures are skipped when a section whose
+workbook they read failed in the same run. The script exits with status 1 at the end if any section
+failed. Running it again continues where it stopped.
 
 A subject shared between a network's training/validation scans and the scans it is evaluated on stops
 the run, so the subject table is required.
 
 Usage, from the repository root (default paths are set at the top of this script; see --help):
 
-  # DenseNet sections for the subject-disjoint networks: first see what would run and how long
+  # DenseNet sections for the subject-disjoint networks (inference, tables, statistics, figures):
+  # first see what would run and how long
   python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py \
-      --sections main_comparison frame_level shortlist_size --dry_run
+      --sections main_comparison statistics frame_level figures shortlist_size --dry_run
   nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py \
-      --sections main_comparison frame_level shortlist_size > <output folder>/eval_densenet.log 2>&1 &
+      --sections main_comparison statistics frame_level figures shortlist_size \
+      > <output folder>/eval_densenet.log 2>&1 &
 
   # backbone tables, once the other backbones are trained (--backbones selects a subset)
   nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py \
@@ -49,9 +52,9 @@ GPU_OUT = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/output'
 GPU_SCANS = '/media/bella/8A1D-C0A6/Academy/Home_ultrasound/acouslic-ai-train-set/images/stacked_fetal_ultrasound'
 
 SECTIONS = ['main_comparison', 'statistics', 'frame_level', 'figures', 'shortlist_size', 'backbones']   # run order
-# sections that only read workbooks written by earlier sections: module name and what they read
-READERS = {'statistics': ('evaluate_statistics', 'main_comparison'),
-           'figures': ('make_figures', 'main_comparison and frame_level')}
+# sections that only read workbooks written by earlier sections: module name and the sections they read
+READERS = {'statistics': ('evaluate_statistics', ['main_comparison']),
+           'figures': ('make_figures', ['main_comparison', 'frame_level'])}
 ARCHS = ['densenet', 'efficientnet', 'resnet', 'convnext']
 
 
@@ -111,11 +114,17 @@ def main():
     for section in [s for s in SECTIONS if s in args.sections]:
         say('\n################ %s  (%s)' % (section, time.strftime('%Y-%m-%d %H:%M:%S')))
         if section in READERS:
-            module, source = READERS[section]
+            module, sources = READERS[section]
             command = [sys.executable, '-m', 'part1_frame_classification.scripts.paper_evaluation.' + module]
             # these sections read workbooks only, so they need only the workbook folder
             if args.dry_run:
-                say('runs after %s, from the workbook(s); takes under a minute' % source)
+                say('runs after %s, from the workbook(s); takes under a minute' % ' and '.join(sources))
+                continue
+            # a workbook its source section failed to write in this run would be missing or out of date
+            failed_sources = [s for s in sources if s in failed]
+            if failed_sources:
+                say('!! %s skipped: %s did not finish cleanly in this run' % (section, ', '.join(failed_sources)))
+                failed.append(section)
                 continue
             arguments = ['--networks', networks] + (['--out_dir', args.out_dir] if args.out_dir else [])
         else:

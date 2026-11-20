@@ -110,9 +110,9 @@ summed over all scans.
 From the repository root:
 
 ```bash
-# DenseNet sections for the subject-disjoint networks (main table, F1 table, Table 2)
-python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections main_comparison frame_level shortlist_size --dry_run   # plan and time estimate
-nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections main_comparison frame_level shortlist_size > <output folder>/eval_densenet.log 2>&1 &
+# DenseNet sections for the subject-disjoint networks: inference, tables, statistics and figures
+python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections main_comparison statistics frame_level figures shortlist_size --dry_run   # plan and time estimate
+nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections main_comparison statistics frame_level figures shortlist_size > <output folder>/eval_densenet.log 2>&1 &
 
 # backbone tables, once all backbones are trained
 nohup python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.py --sections backbones > <output folder>/eval_backbones.log 2>&1 &
@@ -125,7 +125,8 @@ python part1_frame_classification/scripts/paper_evaluation/run_paper_evaluation.
 ```
 
 `--help` lists the paths; default paths are set at the top of `run_paper_evaluation.py` and
-`common.py`. Each section can also be run on its own,
+`common.py`. Statistics and figures are skipped when a section whose workbook they read failed in the same run.
+Each section can also be run on its own,
 e.g. `python -m part1_frame_classification.scripts.paper_evaluation.evaluate_shortlist_size --networks ...`.
 
 Approximate inference time per scan: about 3 s for DenseNet, ResNet and EfficientNet, and 9 s for

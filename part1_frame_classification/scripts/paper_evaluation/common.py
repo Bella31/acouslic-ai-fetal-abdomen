@@ -542,9 +542,15 @@ OPT_METRICS = ['accuracy', 'accuracy_top3', 'accuracy_top5', 'accuracy_top10',
                'wfss', 'wfss_top3', 'wfss_top5', 'wfss_top10', 'inference_time']
 
 
+def strip_mha(name):
+    """Scan identifier without the .mha extension, as in the split lists."""
+    name = str(name)
+    return name[:-4] if name.endswith('.mha') else name
+
+
 def read_top_sheet(path):
     df = pd.read_excel(path, sheet_name='top1-5')
-    df['scan'] = df['scan'].astype(str).str.replace(r'\.mha$', '')
+    df['scan'] = df['scan'].map(strip_mha)
     return df
 
 
